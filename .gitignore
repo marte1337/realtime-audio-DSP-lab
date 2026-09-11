@@ -1,0 +1,62 @@
+# macOS
+.DS_Store
+
+# Editors / IDEs
+.vscode/
+.idea/
+
+# Build directories
+build/
+Build/
+out/
+cmake-build-*/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Xcode
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserstate
+
+# Compiled objects/libraries
+*.o
+*.obj
+*.a
+*.dylib
+*.so
+*.dll
+*.exe
+
+# Audio plugin / standalone artifacts
+*.vst3
+*.component
+*.app
+
+# Temporary files
+*.log
+*.tmp
+*.swp
+
+# Test output
+Testing/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Local NAM / IR assets
+assets/nam/*
+assets/ir/*
+
+# Keep directories
+!assets/nam/.gitkeep
+!assets/ir/.gitkeep
+
+# Misc
+AGENTS.md
