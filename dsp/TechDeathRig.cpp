@@ -14,6 +14,8 @@ void TechDeathRig::reset(double sampleRate, int maxBlockSize)
   sampleRate_ = sampleRate;
   maxBlock_ = maxBlockSize;
   mono_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
+  trim_.reset(sampleRate);
+  gate_.reset(sampleRate);
   nam_.reset(sampleRate, maxBlockSize);
   ir_.reset(sampleRate);
 }
@@ -51,6 +53,8 @@ void TechDeathRig::processBlock(const float* const* inputs, int numInputChannels
         acc += inputs[c][offset + i];
       mono_[static_cast<size_t>(i)] = static_cast<float>(acc / numInputChannels);
     }
+    trim_.processBlock(mono_.data(), mono_.data(), m);
+    gate_.processBlock(mono_.data(), mono_.data(), m);
     nam_.processBlock(mono_.data(), mono_.data(), m);
     ir_.processBlock(mono_.data(), mono_.data(), m);
     for (int c = 0; c < numOutputChannels; ++c)

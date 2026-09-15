@@ -9,6 +9,8 @@ void runWavTests();
 void runCabIrTests();
 void runNamTests();
 void runRigTests();
+void runGateTests();
+void runTrimTests();
 
 namespace
 {
@@ -38,6 +40,8 @@ int main()
   runSuite("cabir", runCabIrTests);
   runSuite("nam", runNamTests);
   runSuite("rig", runRigTests);
+  runSuite("gate", runGateTests);
+  runSuite("trim", runTrimTests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());
   for (const auto& f : tdm_test::failures())
     std::printf("  FAIL %s\n", f.c_str());

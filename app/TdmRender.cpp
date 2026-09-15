@@ -2,6 +2,10 @@
 //
 // Usage:
 //   tdm_render --in di.wav --out processed.wav [--nam amp.nam] [--ir cab.wav]
+//              [--gate-thresh db] [--gate-rel ms] [--input-trim db]
+//
+// Passing either gate flag enables TechDeathGate (the other keeps its
+// default); without gate flags the gate bypasses exactly (Milestone 0 path).
 //
 // Input is averaged to mono, run through the rig in 1024-frame blocks,
 // written back as mono float32 WAV at the input rate.
@@ -18,13 +22,14 @@ namespace
 {
 void usage()
 {
-  std::printf("usage: tdm_render --in di.wav --out processed.wav [--nam amp.nam] [--ir cab.wav]\n");
+  std::printf("usage: tdm_render --in di.wav --out processed.wav [--nam amp.nam] [--ir cab.wav] "
+              "[--gate-thresh db] [--gate-rel ms] [--input-trim db]\n");
 }
 } // namespace
 
 int main(int argc, char** argv)
 {
-  std::string inPath, outPath, namPath, irPath;
+  std::string inPath, outPath, namPath, irPath, gateThresh, gateRel, inputTrim;
   for (int i = 1; i < argc; ++i)
   {
     const std::string a = argv[i];
@@ -45,6 +50,12 @@ int main(int argc, char** argv)
       need("--nam", namPath);
     else if (a == "--ir")
       need("--ir", irPath);
+    else if (a == "--gate-thresh")
+      need("--gate-thresh", gateThresh);
+    else if (a == "--gate-rel")
+      need("--gate-rel", gateRel);
+    else if (a == "--input-trim")
+      need("--input-trim", inputTrim);
     else
     {
       usage();
@@ -63,6 +74,16 @@ int main(int argc, char** argv)
     constexpr int kBlock = 1024;
     tdm::TechDeathRig rig;
     rig.reset(in.sampleRate, kBlock);
+    if (!inputTrim.empty())
+      rig.setInputTrimDb(std::stof(inputTrim));
+    if (!gateThresh.empty() || !gateRel.empty())
+    {
+      if (!gateThresh.empty())
+        rig.setGateThresholdDb(std::stof(gateThresh));
+      if (!gateRel.empty())
+        rig.setGateReleaseMs(std::stof(gateRel));
+      rig.setGateEnabled(true);
+    }
     if (!namPath.empty())
       rig.loadNam(namPath);
     if (!irPath.empty())
@@ -85,9 +106,9 @@ int main(int argc, char** argv)
       if (std::fabs(v) > peak)
         peak = std::fabs(v);
     tdm::writeWavFloat32(outPath, const_cast<const float**>(outPtrs), 1, total, in.sampleRate);
-    std::printf("rendered %d frames @ %.0f Hz (nam=%s ir=%s) peak=%.4f -> %s\n", total, in.sampleRate,
-                namPath.empty() ? "-" : namPath.c_str(), irPath.empty() ? "-" : irPath.c_str(), peak,
-                outPath.c_str());
+    std::printf("rendered %d frames @ %.0f Hz (nam=%s ir=%s gate=%s trim=%.1f) peak=%.4f -> %s\n", total,
+                in.sampleRate, namPath.empty() ? "-" : namPath.c_str(), irPath.empty() ? "-" : irPath.c_str(),
+                rig.isGateEnabled() ? "on" : "off", rig.inputTrimDb(), peak, outPath.c_str());
     return 0;
   }
   catch (const std::exception& e)

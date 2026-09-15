@@ -6,8 +6,12 @@
 // and that rate must match the NAM/IR assets (no resampling in M0).
 //
 // Usage:
-//   tdm_live --nam amp.nam --ir cab.wav
+//   tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms]
+//              [--input-trim db]
 //   tdm_live --list            (show audio devices and exit)
+//
+// Passing either gate flag enables TechDeathGate (the other keeps its
+// default); without gate flags the gate bypasses exactly (Milestone 0 path).
 
 #include <CoreAudio/CoreAudio.h>
 
@@ -285,18 +289,29 @@ int listDevices()
 
 int main(int argc, char** argv)
 {
-  std::string namPath, irPath;
+  std::string namPath, irPath, gateThresh, gateRel, inputTrim;
   for (int i = 1; i < argc; ++i)
   {
     const std::string a = argv[i];
     if (a == "--list")
       return listDevices();
-    if ((a == "--nam" || a == "--ir") && i + 1 < argc)
+    if ((a == "--nam" || a == "--ir" || a == "--gate-thresh" || a == "--gate-rel" || a == "--input-trim")
+        && i + 1 < argc)
     {
-      (a == "--nam" ? namPath : irPath) = argv[++i];
+      if (a == "--nam")
+        namPath = argv[++i];
+      else if (a == "--ir")
+        irPath = argv[++i];
+      else if (a == "--gate-thresh")
+        gateThresh = argv[++i];
+      else if (a == "--gate-rel")
+        gateRel = argv[++i];
+      else
+        inputTrim = argv[++i];
       continue;
     }
-    std::printf("usage: tdm_live [--nam amp.nam] [--ir cab.wav] | --list\n");
+    std::printf("usage: tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms] "
+                "[--input-trim db] | --list\n");
     return 2;
   }
 
@@ -320,6 +335,16 @@ int main(int argc, char** argv)
 
     tdm::TechDeathRig rig;
     rig.reset(outSr, ctx.maxBlock);
+    if (!inputTrim.empty())
+      rig.setInputTrimDb(std::stof(inputTrim));
+    if (!gateThresh.empty() || !gateRel.empty())
+    {
+      if (!gateThresh.empty())
+        rig.setGateThresholdDb(std::stof(gateThresh));
+      if (!gateRel.empty())
+        rig.setGateReleaseMs(std::stof(gateRel));
+      rig.setGateEnabled(true);
+    }
     if (!namPath.empty())
       rig.loadNam(namPath);
     if (!irPath.empty())
@@ -334,8 +359,9 @@ int main(int argc, char** argv)
     halCheck(AudioDeviceStart(inDev, inProc), "start input");
     halCheck(AudioDeviceStart(outDev, outProc), "start output");
 
-    std::printf("live: in=%dch out=%dch %.0fHz block<=%d nam=%s ir=%s\n", ctx.inChannels, ctx.outChannels, outSr,
-                ctx.maxBlock, rig.hasNam() ? "yes" : "no", rig.hasIr() ? "yes" : "no");
+    std::printf("live: in=%dch out=%dch %.0fHz block<=%d nam=%s ir=%s gate=%s trim=%.1f\n", ctx.inChannels,
+                ctx.outChannels, outSr, ctx.maxBlock, rig.hasNam() ? "yes" : "no", rig.hasIr() ? "yes" : "no",
+                rig.isGateEnabled() ? "on" : "off", rig.inputTrimDb());
     std::printf("press q + Enter to quit\n");
     char line[64] = {};
     while (std::fgets(line, sizeof(line), stdin) != nullptr)
