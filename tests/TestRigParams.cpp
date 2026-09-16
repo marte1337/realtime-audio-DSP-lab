@@ -192,6 +192,10 @@ void runRigParamsTests()
         rig.setOutputTrimDb(-24.0f + 48.0f * unitRand(s));
         rig.setGateEnabled(unitRand(s) > 0.5f);
         rig.setDriveEnabled(unitRand(s) > 0.5f);
+        rig.setShapeEnabled(unitRand(s) > 0.5f);
+        rig.setWeight(unitRand(s));
+        rig.setContour(unitRand(s));
+        rig.setPresence(unitRand(s));
         if (done.load(std::memory_order_relaxed))
           break;
       }

@@ -10,6 +10,7 @@
 //   tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms]
 //              [--input-trim db]
 //              [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]
+//              [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]
 //              [--output-trim db]
 //   tdm_live --list            (show audio devices and exit)
 //
@@ -17,6 +18,9 @@
 // default); without gate flags the gate bypasses exactly (Milestone 0 path).
 // Passing --tight-drive or any of --tight/--drive/--bite enables TightDrive
 // (unspecified params keep their defaults); otherwise it bypasses exactly.
+// Passing --tone-shape or any of --weight/--contour/--presence enables
+// ToneShape (unspecified params keep their defaults); otherwise it bypasses
+// exactly.
 //
 // Audio behavior lives in host/TdmEngine (shared with the developer app);
 // this file is only flag parsing plus the run loop.
@@ -30,8 +34,8 @@
 int main(int argc, char** argv)
 {
   std::string namPath, irPath, gateThresh, gateRel, inputTrim;
-  std::string tight, drive, bite, outputTrim;
-  bool driveEnable = false;
+  std::string tight, drive, bite, weight, contour, presence, outputTrim;
+  bool driveEnable = false, shapeEnable = false;
   for (int i = 1; i < argc; ++i)
   {
     const std::string a = argv[i];
@@ -51,8 +55,14 @@ int main(int argc, char** argv)
       driveEnable = true;
       continue;
     }
+    if (a == "--tone-shape")
+    {
+      shapeEnable = true;
+      continue;
+    }
     if ((a == "--nam" || a == "--ir" || a == "--gate-thresh" || a == "--gate-rel" || a == "--input-trim"
-         || a == "--tight" || a == "--drive" || a == "--bite" || a == "--output-trim")
+         || a == "--tight" || a == "--drive" || a == "--bite" || a == "--weight" || a == "--contour"
+         || a == "--presence" || a == "--output-trim")
         && i + 1 < argc)
     {
       if (a == "--nam")
@@ -71,12 +81,19 @@ int main(int argc, char** argv)
         drive = argv[++i];
       else if (a == "--bite")
         bite = argv[++i];
+      else if (a == "--weight")
+        weight = argv[++i];
+      else if (a == "--contour")
+        contour = argv[++i];
+      else if (a == "--presence")
+        presence = argv[++i];
       else
         outputTrim = argv[++i];
       continue;
     }
     std::printf("usage: tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms] "
                 "[--input-trim db] [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n"
+                "       [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]\n"
                 "       [--output-trim db] | --list\n");
     return 2;
   }
@@ -105,6 +122,16 @@ int main(int argc, char** argv)
         params.bite = std::stof(bite);
       params.driveEnabled = true;
     }
+    if (shapeEnable || !weight.empty() || !contour.empty() || !presence.empty())
+    {
+      if (!weight.empty())
+        params.weight = std::stof(weight);
+      if (!contour.empty())
+        params.contour = std::stof(contour);
+      if (!presence.empty())
+        params.presence = std::stof(presence);
+      params.shapeEnabled = true;
+    }
     if (!outputTrim.empty())
       params.outputTrimDb = std::stof(outputTrim);
     engine.rig().setParams(params);
@@ -127,9 +154,10 @@ int main(int argc, char** argv)
     }
 
     const tdm::RigParams applied = engine.rig().params();
-    std::printf("live: %.0fHz nam=%s ir=%s gate=%s trim=%.1f drive=%s out trim=%.1f\n", engine.sampleRate(),
-                engine.rig().hasNam() ? "yes" : "no", engine.rig().hasIr() ? "yes" : "no",
-                applied.gateEnabled ? "on" : "off", applied.inputTrimDb, applied.driveEnabled ? "on" : "off",
+    std::printf("live: %.0fHz nam=%s ir=%s gate=%s trim=%.1f drive=%s shape=%s out trim=%.1f\n",
+                engine.sampleRate(), engine.rig().hasNam() ? "yes" : "no",
+                engine.rig().hasIr() ? "yes" : "no", applied.gateEnabled ? "on" : "off", applied.inputTrimDb,
+                applied.driveEnabled ? "on" : "off", applied.shapeEnabled ? "on" : "off",
                 applied.outputTrimDb);
     std::printf("press q + Enter to quit\n");
     char line[64] = {};

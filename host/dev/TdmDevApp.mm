@@ -1,8 +1,8 @@
 // tdm_dev: Developer Control App v0 for TechDeathMachine.
 //
 // Small native-AppKit engineering UI around the shared TdmEngine (the same
-// engine tdm_live uses). Deliberately unpolished: no presets, no ToneShape,
-// no meters, no realtime NAM/IR swapping.
+// engine tdm_live uses). Deliberately unpolished: no presets, no meters,
+// no realtime NAM/IR swapping.
 //
 // v0 loading policy (audition-friendly, not realtime-safe by design):
 //   Stop audio -> choose NAM/IR -> Start audio.
@@ -11,7 +11,7 @@
 //
 // Audition starting point (UI initial state only, not a DSP assumption):
 //   Input 0 dB, Gate ON -55 dB / 52 ms, Drive ON 0.85 / 0.50 / 0.70,
-//   Output 0 dB, reference NAM preloaded best-effort.
+//   ToneShape ON neutral, Output 0 dB, reference NAM preloaded best-effort.
 //
 // Hidden flags (also used for headless verification):
 //   --smoke-test   run offline rig/param checks, no GUI, no hardware
@@ -47,6 +47,10 @@ tdm::RigParams auditionDefaults()
   p.tight = 0.85f;
   p.drive = 0.50f;
   p.bite = 0.70f;
+  p.shapeEnabled = true;
+  p.weight = 0.5f;
+  p.contour = 0.5f;
+  p.presence = 0.5f;
   p.outputTrimDb = 0.0f;
   return p;
 }
@@ -70,6 +74,9 @@ enum SliderTag
   kTagTight,
   kTagDrive,
   kTagBite,
+  kTagWeight,
+  kTagContour,
+  kTagPresence,
   kTagOutTrim
 };
 
@@ -93,6 +100,12 @@ double resetValueForTag(SliderTag tag)
     return tdm::TightDrive::kDefaultDrive;
   case kTagBite:
     return tdm::TightDrive::kDefaultBite;
+  case kTagWeight:
+    return tdm::ToneShape::kDefaultWeight;
+  case kTagContour:
+    return tdm::ToneShape::kDefaultContour;
+  case kTagPresence:
+    return tdm::ToneShape::kDefaultPresence;
   case kTagOutTrim:
     return tdm::OutputTrim::kDefaultTrimDb;
   }
@@ -125,6 +138,9 @@ int smokeTest()
     check((float)resetValueForTag(kTagTight) == 0.5f, "reset: tight -> 0.50");
     check((float)resetValueForTag(kTagDrive) == 0.3f, "reset: drive -> 0.30");
     check((float)resetValueForTag(kTagBite) == 0.5f, "reset: bite -> 0.50");
+    check((float)resetValueForTag(kTagWeight) == 0.5f, "reset: weight -> 0.50");
+    check((float)resetValueForTag(kTagContour) == 0.5f, "reset: contour -> 0.50");
+    check((float)resetValueForTag(kTagPresence) == 0.5f, "reset: presence -> 0.50");
     check((float)resetValueForTag(kTagOutTrim) == 0.0f, "reset: output trim -> 0 dB");
     // Double-click behavior on the real control (defined after the control
     // classes below): a synthesized double-click parks the reset value and
@@ -290,6 +306,7 @@ bool probeDoubleClickReset(std::string& detail)
   NSMutableDictionary<NSNumber*, NSTextField*>* _valueLabels;
   NSButton* _gateCheck;
   NSButton* _driveCheck;
+  NSButton* _shapeCheck;
   NSTimer* _tick;
 }
 
@@ -367,7 +384,7 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)buildUI
 {
   const CGFloat kWidth = 620;
-  const CGFloat kHeight = 640;
+  const CGFloat kHeight = 770;
   NSRect frame = NSMakeRect(0, 0, kWidth, kHeight);
   _window = [[NSWindow alloc] initWithContentRect:frame
                                         styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
@@ -498,6 +515,40 @@ bool probeDoubleClickReset(std::string& detail)
                width:kWidth];
   y -= 40;
 
+  // ToneShape section (post-cab; neutral is transparent).
+  _shapeCheck = [NSButton checkboxWithTitle:@"ToneShape enable" target:self action:@selector(shapeToggled:)];
+  _shapeCheck.frame = NSMakeRect(20, y, 180, 22);
+  _shapeCheck.state = NSControlStateValueOn; // audition default (neutral)
+  [_window.contentView addSubview:_shapeCheck];
+  y -= 30;
+  [self addSliderRow:@"Weight"
+                 tag:kTagWeight
+                 min:tdm::ToneShape::kMinWeight
+                 max:tdm::ToneShape::kMaxWeight
+                init:0.50
+               reset:tdm::ToneShape::kDefaultWeight
+                   y:y
+               width:kWidth];
+  y -= 30;
+  [self addSliderRow:@"Contour"
+                 tag:kTagContour
+                 min:tdm::ToneShape::kMinContour
+                 max:tdm::ToneShape::kMaxContour
+                init:0.50
+               reset:tdm::ToneShape::kDefaultContour
+                   y:y
+               width:kWidth];
+  y -= 30;
+  [self addSliderRow:@"Presence"
+                 tag:kTagPresence
+                 min:tdm::ToneShape::kMinPresence
+                 max:tdm::ToneShape::kMaxPresence
+                init:0.50
+               reset:tdm::ToneShape::kDefaultPresence
+                   y:y
+               width:kWidth];
+  y -= 40;
+
   // Output section.
   [self addSliderRow:@"Output Trim"
                  tag:kTagOutTrim
@@ -508,7 +559,7 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y -= 34;
-  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no ToneShape, no meters. Stops are silent, not pretty."
+  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no meters, no experimental FX."
                                 frame:NSMakeRect(20, y, kWidth - 40, 22)
                                 small:YES];
   [_window.contentView addSubview:foot];
@@ -546,6 +597,9 @@ bool probeDoubleClickReset(std::string& detail)
   _valueLabels[@(kTagTight)].stringValue = fmt01(p.tight);
   _valueLabels[@(kTagDrive)].stringValue = fmt01(p.drive);
   _valueLabels[@(kTagBite)].stringValue = fmt01(p.bite);
+  _valueLabels[@(kTagWeight)].stringValue = fmt01(p.weight);
+  _valueLabels[@(kTagContour)].stringValue = fmt01(p.contour);
+  _valueLabels[@(kTagPresence)].stringValue = fmt01(p.presence);
   _valueLabels[@(kTagOutTrim)].stringValue = fmtDb(p.outputTrimDb);
 }
 
@@ -591,6 +645,15 @@ bool probeDoubleClickReset(std::string& detail)
   case kTagBite:
     _engine->rig().setBite((float)v);
     break;
+  case kTagWeight:
+    _engine->rig().setWeight((float)v);
+    break;
+  case kTagContour:
+    _engine->rig().setContour((float)v);
+    break;
+  case kTagPresence:
+    _engine->rig().setPresence((float)v);
+    break;
   case kTagOutTrim:
     _engine->rig().setOutputTrimDb((float)v);
     break;
@@ -608,6 +671,11 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)driveToggled:(NSButton*)sender
 {
   _engine->rig().setDriveEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)shapeToggled:(NSButton*)sender
+{
+  _engine->rig().setShapeEnabled(sender.state == NSControlStateValueOn);
 }
 
 - (void)toggleAudio:(id)sender

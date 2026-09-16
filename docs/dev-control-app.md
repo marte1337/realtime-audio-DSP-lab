@@ -3,7 +3,7 @@
 Small graphical engineering interface for the current playable chain:
 
 ```text
-Input Trim → Gate → TightDrive → NAM → IR → Output Trim
+Input Trim → Gate → TightDrive → NAM → IR → ToneShape → Output Trim
 ```
 
 It replaces long `tdm_live` command lines while auditioning amps. It is
@@ -36,12 +36,14 @@ Headless checks (no GUI, no audio hardware):
 - Gate enable + Threshold (-80..-35 dB, starts -55) + Release (10..500 ms,
   starts 52)
 - TightDrive enable + Tight / Drive / Bite (0..1, start 0.85 / 0.50 / 0.70)
+- ToneShape enable + Weight / Contour / Presence (0..1, start neutral 0.50)
 - Output Trim (-24..+24 dB, starts 0)
 - Loaded NAM/IR basenames and live parameter values (10 Hz refresh)
 - Double-click any slider to reset it to its canonical DSP default: Input
   0 dB, Gate −55 dB / 50 ms, Tight 0.50, Drive 0.30, Bite 0.50, Output
   0 dB. The audition starting points (e.g. TightDrive 0.85 / 0.50 / 0.70)
-  are intentionally NOT the reset values.
+  are intentionally NOT the reset values. ToneShape resets to neutral
+  (Weight 0.50, Contour 0.50, Presence 0.50).
 
 ## Threading rules (v0)
 

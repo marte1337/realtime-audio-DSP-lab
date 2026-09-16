@@ -15,6 +15,7 @@
 #include "dsp/InputTrim.h"
 #include "dsp/OutputTrim.h"
 #include "dsp/TightDrive/TightDrive.h"
+#include "dsp/ToneShape/ToneShape.h"
 
 namespace tdm
 {
@@ -28,6 +29,10 @@ struct RigParams
   float tight = TightDrive::kDefaultTight;
   float drive = TightDrive::kDefaultDrive;
   float bite = TightDrive::kDefaultBite;
+  bool shapeEnabled = false;
+  float weight = ToneShape::kDefaultWeight;
+  float contour = ToneShape::kDefaultContour;
+  float presence = ToneShape::kDefaultPresence;
   float outputTrimDb = OutputTrim::kDefaultTrimDb;
 };
 } // namespace tdm

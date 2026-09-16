@@ -754,3 +754,144 @@ unchanged brutal 52 ms feel.
   the bar stays shut; assessed as contrived (real swells start from
   CLOSED and cross Threshold normally) but flagged.
 - Pre-NAM placement question from v1.1 stands unchanged.
+
+---
+
+## Date
+
+2026-09-16
+
+### Module
+
+ToneShape v1 (post-cab Weight / Contour / Presence)
+
+### Hypothesis
+
+Three linear post-IR controls can pull different amp captures into one
+TechDeathMachine family (tight mass, separable mids, forward attack)
+without erasing their character and without touching saturation (which
+belongs to TightDrive/NAM, not EQ). Post-cab placement means the
+controls shape what the speaker already filtered; linear means they can
+only re-balance, never create fizz — so no anti-fizz stage is needed.
+
+### Implementation
+
+`dsp/ToneShape/ToneShape.h/.cpp`, inserted post-IR in `TechDeathRig`
+(... → NAM → IR → ToneShape → Output Trim → broadcast). All sections
+parallel form y = x + k*section(x), one-pole-smoothed k (tau ~10 ms),
+scalar states only, RT-safe, opt-in bypass bit-exact, neutral bit-exact
+from reset:
+
+- Weight: parallel low shelf, corner 140 Hz, +/-6 dB (exact at DC).
+- Contour: parallel bell, center 600 Hz, Q 1, +/-6 dB (exact at fc via
+  numeric normalization of the realized biquad response). The bell is one
+  fixed RBJ bandpass (constant 0 dB peak gain form, TDF2); only k moves.
+- Presence: parallel high shelf, corner 3.5 kHz, +/-5 dB nominal
+  (~+4 dB realized at 15 kHz/48 kHz — one-pole curve, Bite precedent).
+
+Topology evidence (offline probes, stepped sines through both vendored
+NAMs + test IR, fundamental tracking):
+
+- 5150 vs 6505 diverge most at 150 Hz (-9.5 dB), 60 Hz (-7.9), 220 Hz
+  (-7.1), 1200 Hz (-6.5), 620 Hz (-5.7), 2.2-5 kHz (-4..-5) — one axis
+  per control, corners 140 / 600 / 3500 Hz confirmed, not fitted.
+- A subtractive one-pole bell (LP1000-LP350) was measured and REJECTED:
+  +2.7 dB interaction at 100 Hz at full body. The biquad bell measures
+  <1.6 dB at 100 Hz / 3 kHz at full extremes (suite pins <2 dB).
+- Fixed anti-fizz LPF considered and REJECTED: linear + post-IR means
+  ToneShape cannot create fizz or alias products; a fixed LPF would only
+  dull existing content. Harshness unresponsive to Presence-cut is an
+  amp/IR choice by definition.
+- Test-oracle lesson (cost one debug round): the parallel gain is
+  |1 + k*H| with COMPLEX H — matching on magnitudes alone underpredicts
+  by ~0.1 (weight LP lags ~78 deg at 1 kHz). The suite evaluates the
+  digital-exact complex closed forms. Same trap likely lurks in any
+  future parallel-topology test.
+
+Automated suite: 485 checks, 0 failures (76 new: defaults/clamps,
+bypass incl. enabled-neutral bit-exact, per-control spot gains at
+44.1/48/96 kHz, skirts/locality, stability at both extreme corners,
+mid-stream jumps reconverge, rig composition shape-x-trim). `make smoke`
+green incl. a new `--tone-shape` render leg.
+
+Direction check on real captures (linear post-EQ, same amp cancels):
+6505 at 0.55/0.38/0.60 moves 620 Hz -1.3 dB and 4-5 kHz +0.4 dB as
+specified; 5150 at 0.38/0.40/0.42 trims lows/mids/presence toward the
+6505 with correct signs. Residual level gaps are saturation character —
+correctly outside ToneShape's job (OutputTrim + TightDrive).
+
+### Audition setup
+
+Same guitar/DI for every take. Match loudness with Output Trim BY EAR
+first (captures differ ~15 dB), then judge shape. Reference chain:
+Gate -55 dB / 52 ms, TightDrive 0.85/0.50/0.70, 6505 unboosted + Mesa
+V30 unless noted. Starting points (offline-derived, NOT ear-verified):
+
+- 6505_unboost — (a) Neutral 0.50/0.50/0.50; (b) Stage scoop
+  0.55/0.38/0.60.
+- 5150II_crunch — (a) Family match 0.38/0.40/0.42; (b) Body kept
+  0.50/0.45/0.45. Missing saturation is a TightDrive question, not this.
+- Powerball OD1 (description-derived, unmeasured — no local capture) —
+  (a) Tame bite 0.55/0.50/0.35; (b) Mass+ 0.62/0.55/0.40. Level-match
+  with OutputTrim first (quiet capture).
+
+Example: `./build/tdm_live --nam <6505> --ir <V30> --input-trim 0
+--gate-thresh -55 --gate-rel 52 --tight-drive --tight 0.85 --drive 0.50
+--bite 0.70 --tone-shape --weight 0.55 --contour 0.38 --presence 0.60
+--output-trim 2.6` (or dial the same in `tdm_dev`, ToneShape ON).
+
+### Expected behavior
+
+What should change: per-amp low mass, mid boxiness vs separation, and
+pick-attack forwardness, converging toward one family without the amps
+becoming interchangeable.
+
+What should remain unchanged: saturation/drive character per amp at
+matched loudness (verify: same take at neutral vs shaped must differ
+only in balance, never in gain feel); gate/trim/drive/NAM/IR behavior
+(suites green, no files modified there); bypassed rig bit-exact
+(verified); parameter moves zipper-free (smoothed k).
+
+### Listening result
+
+NOT YET AUDITIONED. Confirm per starting point: palm-mute weight vs
+boom, single-note separation vs hollowness (Contour cut too far hollows
+chords), attack clarity without scratch, and that neutral sounds
+identical to shape-off (it is bit-exact — any audible difference there
+is a bug).
+
+### Problems
+
+None observed offline. Known non-issues: Weight boosts DC up to +6 dB
+(no DC blocker in v1, rig-wide stance); enabled-neutral is bit-exact
+only from reset (after moves it converges to float noise); top-octave
+Presence realizes ~4 dB not 5 dB (documented one-pole curve).
+
+### Next step
+
+Run the per-amp starting takes above; promote winners toward curated
+defaults only from listening evidence. Candidates if listening demands:
+Contour Q exposure, Weight corner shift for 8-strings, per-NAM
+compensation metadata (preset layer calls the same setters).
+
+### Transferable learning
+
+- Parallel y = x + k*section(x) with smoothed k is now a 3-for-3 proven
+  house pattern (Bite, Weight/Presence, Contour): neutral-bit-exact,
+  zipper-free without coefficient interpolation, trivially RT-safe.
+- A fixed-coefficient biquad inside a smoothed parallel mix gives
+  parametric-grade skirts with zero coefficient-zipper risk — the right
+  shape whenever a bell is needed; still needs senior review as the
+  first biquad in the codebase.
+- Always test parallel topologies against complex |1 + k*H|, never
+  against magnitudes.
+
+### Senior DSP review requested
+
+- RBJ bandpass coefficient derivation + numeric normalization approach
+  (first biquad in the repo; suite pins center/skirts at 3 rates).
+- Corner/width choices (140 Hz shelf, 600 Hz Q1 bell, 3.5 kHz shelf)
+  against real-cabinet tech-death targets — broad by design, confirm no
+  howler.
+- Weight DC gain (+6 dB on NAM DC offset) and the standing no-DC-blocker
+  stance for a post-IR linear stage.

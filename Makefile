@@ -32,7 +32,7 @@ NAM_FLAGS := $(STD) $(OPT) -w $(DEFS) -I$(NAM_CORE_DIR) -I$(EIGEN_DIR) -I$(JSON_
 NAM_SRCS := $(wildcard $(NAM_CORE_DIR)/NAM/*.cpp) $(wildcard $(NAM_CORE_DIR)/NAM/wavenet/*.cpp)
 NAM_OBJS := $(patsubst $(NAM_CORE_DIR)/%.cpp,$(NAMOBJ)/%.o,$(NAM_SRCS))
 
-TDM_SRCS := dsp/NamStage.cpp dsp/CabIrStage.cpp dsp/WavFile.cpp dsp/TechDeathRig.cpp dsp/Gate/TechDeathGate.cpp dsp/InputTrim.cpp dsp/TightDrive/TightDrive.cpp dsp/OutputTrim.cpp
+TDM_SRCS := dsp/NamStage.cpp dsp/CabIrStage.cpp dsp/WavFile.cpp dsp/TechDeathRig.cpp dsp/Gate/TechDeathGate.cpp dsp/InputTrim.cpp dsp/TightDrive/TightDrive.cpp dsp/ToneShape/ToneShape.cpp dsp/OutputTrim.cpp
 TDM_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TDM_SRCS))
 
 # Live-audio host layer (CoreAudio duplex). Kept OUT of TDM_OBJS so the
@@ -44,7 +44,7 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(patsubst %.mm,$(BUILD)/%.o,$(DEV_SRCS))
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestOutputTrim.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestOutputTrim.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 FRAMEWORKS := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
@@ -97,6 +97,8 @@ smoke: $(BUILD)/tdm_render
 	python3 scripts/smoke_check.py $(BUILD)/smoke_gated.wav
 	./$(BUILD)/tdm_render --in $(BUILD)/smoke_di.wav --nam "$(EXAMPLE_NAM)" --ir $(BUILD)/smoke_ir.wav --gate-thresh -40 --gate-rel 50 --tight-drive --tight 0.55 --drive 0.35 --bite 0.6 --out $(BUILD)/smoke_drive.wav
 	python3 scripts/smoke_check.py $(BUILD)/smoke_drive.wav
+	./$(BUILD)/tdm_render --in $(BUILD)/smoke_di.wav --nam "$(EXAMPLE_NAM)" --ir $(BUILD)/smoke_ir.wav --tone-shape --weight 0.7 --contour 0.4 --presence 0.6 --out $(BUILD)/smoke_shape.wav
+	python3 scripts/smoke_check.py $(BUILD)/smoke_shape.wav
 	./$(BUILD)/tdm_render --in $(BUILD)/smoke_di.wav --output-trim 14.45 --out $(BUILD)/smoke_outtrim.wav
 	python3 scripts/smoke_check.py $(BUILD)/smoke_outtrim.wav
 

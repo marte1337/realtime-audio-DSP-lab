@@ -17,6 +17,7 @@ void TechDeathRig::reset(double sampleRate, int maxBlockSize)
   trim_.reset(sampleRate);
   gate_.reset(sampleRate);
   drive_.reset(sampleRate);
+  shape_.reset(sampleRate);
   outTrim_.reset(sampleRate);
   nam_.reset(sampleRate, maxBlockSize);
   ir_.reset(sampleRate);
@@ -50,6 +51,10 @@ RigParams TechDeathRig::params() const
   p.tight = tight();
   p.drive = drive();
   p.bite = bite();
+  p.shapeEnabled = isShapeEnabled();
+  p.weight = weight();
+  p.contour = contour();
+  p.presence = presence();
   p.outputTrimDb = outputTrimDb();
   return p;
 }
@@ -64,6 +69,10 @@ void TechDeathRig::setParams(const RigParams& p)
   setTight(p.tight);
   setDrive(p.drive);
   setBite(p.bite);
+  setShapeEnabled(p.shapeEnabled);
+  setWeight(p.weight);
+  setContour(p.contour);
+  setPresence(p.presence);
   setOutputTrimDb(p.outputTrimDb);
 }
 
@@ -117,6 +126,30 @@ void TechDeathRig::syncParamsToStages()
     drive_.setBite(bite);
     appliedBite_ = bite;
   }
+  const bool shapeEn = shapeEnabled_.load(std::memory_order_relaxed);
+  if (shapeEn != appliedShapeEnabled_)
+  {
+    shape_.setEnabled(shapeEn);
+    appliedShapeEnabled_ = shapeEn;
+  }
+  const float weight = weight_.load(std::memory_order_relaxed);
+  if (weight != appliedWeight_)
+  {
+    shape_.setWeight(weight);
+    appliedWeight_ = weight;
+  }
+  const float contour = contour_.load(std::memory_order_relaxed);
+  if (contour != appliedContour_)
+  {
+    shape_.setContour(contour);
+    appliedContour_ = contour;
+  }
+  const float presence = presence_.load(std::memory_order_relaxed);
+  if (presence != appliedPresence_)
+  {
+    shape_.setPresence(presence);
+    appliedPresence_ = presence;
+  }
   const float outTrim = outTrimDb_.load(std::memory_order_relaxed);
   if (outTrim != appliedOutTrimDb_)
   {
@@ -135,6 +168,10 @@ void TechDeathRig::pushAllParamsToStages()
   drive_.setTight(tightParam_.load(std::memory_order_relaxed));
   drive_.setDrive(driveParam_.load(std::memory_order_relaxed));
   drive_.setBite(biteParam_.load(std::memory_order_relaxed));
+  shape_.setEnabled(shapeEnabled_.load(std::memory_order_relaxed));
+  shape_.setWeight(weight_.load(std::memory_order_relaxed));
+  shape_.setContour(contour_.load(std::memory_order_relaxed));
+  shape_.setPresence(presence_.load(std::memory_order_relaxed));
   outTrim_.setTrimDb(outTrimDb_.load(std::memory_order_relaxed));
   appliedInTrimDb_ = inTrimDb_.load(std::memory_order_relaxed);
   appliedGateEnabled_ = gateEnabled_.load(std::memory_order_relaxed);
@@ -144,6 +181,10 @@ void TechDeathRig::pushAllParamsToStages()
   appliedTight_ = tightParam_.load(std::memory_order_relaxed);
   appliedDrive_ = driveParam_.load(std::memory_order_relaxed);
   appliedBite_ = biteParam_.load(std::memory_order_relaxed);
+  appliedShapeEnabled_ = shapeEnabled_.load(std::memory_order_relaxed);
+  appliedWeight_ = weight_.load(std::memory_order_relaxed);
+  appliedContour_ = contour_.load(std::memory_order_relaxed);
+  appliedPresence_ = presence_.load(std::memory_order_relaxed);
   appliedOutTrimDb_ = outTrimDb_.load(std::memory_order_relaxed);
 }
 
@@ -176,6 +217,7 @@ void TechDeathRig::processBlock(const float* const* inputs, int numInputChannels
     drive_.processBlock(mono_.data(), mono_.data(), m);
     nam_.processBlock(mono_.data(), mono_.data(), m);
     ir_.processBlock(mono_.data(), mono_.data(), m);
+    shape_.processBlock(mono_.data(), mono_.data(), m);
     outTrim_.processBlock(mono_.data(), mono_.data(), m);
     for (int c = 0; c < numOutputChannels; ++c)
       for (int i = 0; i < m; ++i)

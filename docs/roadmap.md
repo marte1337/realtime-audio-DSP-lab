@@ -8,6 +8,7 @@
 - Output Trim
 - TechDeathGate v1.2 (CLOSED → OPEN → CLOSING state machine, ~52 ms feel)
 - TightDrive v1 (pre-NAM conditioning: Tight / Drive / Bite)
+- ToneShape v1 (post-cab Weight / Contour / Presence, `dsp/ToneShape/`)
 - Reference NAM auditioning in progress (6505 unboosted + Mesa V30 lead)
 - Developer Control App v0 (`build/tdm_dev`, see `docs/dev-control-app.md`):
   audition NAMs/IRs and all current DSP params from a small native UI
@@ -48,7 +49,7 @@ Target product shapes remain macOS Standalone, VST3, likely AU later.
 ## Next
 
 - Establish a small set of reference NAMs (3 curated amp sounds)
-- Design ToneShape after multi-amp auditioning (`dsp/ToneShape/`)
+- Audition ToneShape v1 starting points per reference amp (see experiments log)
 - Space: delay / reverb (`dsp/Space/`)
 - Product layer: harden `host/` toward Standalone packaging, then pick
   JUCE vs iPlug2 for VST3 (+AU) and wrap the unchanged `TechDeathRig`

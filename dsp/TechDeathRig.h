@@ -1,7 +1,7 @@
 #pragma once
 
 // Rig: Input -> Input Trim -> TechDeathGate -> TightDrive -> NAM A2
-//   -> Cabinet IR -> Output Trim -> Output.
+//   -> Cabinet IR -> ToneShape -> Output Trim -> Output.
 //
 // Mono internal path. Multi-channel input is averaged to mono (documented
 // choice: avoids the +6 dB surprise of summing; stereo width tricks come
@@ -10,13 +10,16 @@
 // exactly until explicitly enabled, preserving Milestone 0 behavior.
 // Input Trim defaults to 0 dB, at which it passes input bit-exactly.
 // TightDrive is disabled by default and bypasses exactly when off.
+// ToneShape is disabled by default and bypasses exactly when off (and is
+// bit-exact at neutral settings from reset when enabled).
 // Output Trim defaults to 0 dB, at which it passes input bit-exactly; it
 // only changes post-chain listening level, never NAM drive.
 //
 // Threading contract (developer-app era, DSP algorithms untouched):
 // - The atomic parameter setters below (setGateEnabled, setGateThresholdDb,
 //   setGateReleaseMs, setInputTrimDb, setDriveEnabled, setTight, setDrive,
-//   setBite, setOutputTrimDb, setParams) are safe to call from ANY thread,
+//   setBite, setShapeEnabled, setWeight, setContour, setPresence,
+//   setOutputTrimDb, setParams) are safe to call from ANY thread,
 //   including the GUI/control thread while audio runs. They only perform a
 //   clamped lock-free atomic store: no allocation, no locks, no DSP touch.
 // - processBlock() picks up changed values once per call, at the block
@@ -42,6 +45,7 @@
 #include "dsp/RigParams.h"
 #include "dsp/Gate/TechDeathGate.h"
 #include "dsp/TightDrive/TightDrive.h"
+#include "dsp/ToneShape/ToneShape.h"
 #include "dsp/OutputTrim.h"
 
 namespace tdm
@@ -115,6 +119,26 @@ public:
   float drive() const { return driveParam_.load(std::memory_order_relaxed); }
   float bite() const { return biteParam_.load(std::memory_order_relaxed); }
 
+  // ToneShape controls. Disabled by default: bypass preserves the previous
+  // rig behavior exactly until explicitly enabled.
+  void setShapeEnabled(bool enabled) { shapeEnabled_.store(enabled, std::memory_order_relaxed); }
+  void setWeight(float v)
+  {
+    weight_.store(std::clamp(v, ToneShape::kMinWeight, ToneShape::kMaxWeight), std::memory_order_relaxed);
+  }
+  void setContour(float v)
+  {
+    contour_.store(std::clamp(v, ToneShape::kMinContour, ToneShape::kMaxContour), std::memory_order_relaxed);
+  }
+  void setPresence(float v)
+  {
+    presence_.store(std::clamp(v, ToneShape::kMinPresence, ToneShape::kMaxPresence), std::memory_order_relaxed);
+  }
+  bool isShapeEnabled() const { return shapeEnabled_.load(std::memory_order_relaxed); }
+  float weight() const { return weight_.load(std::memory_order_relaxed); }
+  float contour() const { return contour_.load(std::memory_order_relaxed); }
+  float presence() const { return presence_.load(std::memory_order_relaxed); }
+
   // Output Trim control. Defaults to 0 dB, which passes input bit-exactly
   // and preserves existing behavior. Post-chain only: loudness matching
   // without touching NAM saturation or drive response.
@@ -145,6 +169,7 @@ private:
   TightDrive drive_;
   NamStage nam_;
   CabIrStage ir_;
+  ToneShape shape_;
   OutputTrim outTrim_;
   std::vector<float> mono_; // internal scratch, sized maxBlock_
   double sampleRate_ = 0.0;
@@ -161,6 +186,10 @@ private:
   std::atomic<float> tightParam_{TightDrive::kDefaultTight};
   std::atomic<float> driveParam_{TightDrive::kDefaultDrive};
   std::atomic<float> biteParam_{TightDrive::kDefaultBite};
+  std::atomic<bool> shapeEnabled_{false};
+  std::atomic<float> weight_{ToneShape::kDefaultWeight};
+  std::atomic<float> contour_{ToneShape::kDefaultContour};
+  std::atomic<float> presence_{ToneShape::kDefaultPresence};
   std::atomic<float> outTrimDb_{OutputTrim::kDefaultTrimDb};
 
   // Last values pushed into the stages. Audio/reset-thread only.
@@ -172,6 +201,10 @@ private:
   float appliedTight_ = TightDrive::kDefaultTight;
   float appliedDrive_ = TightDrive::kDefaultDrive;
   float appliedBite_ = TightDrive::kDefaultBite;
+  bool appliedShapeEnabled_ = false;
+  float appliedWeight_ = ToneShape::kDefaultWeight;
+  float appliedContour_ = ToneShape::kDefaultContour;
+  float appliedPresence_ = ToneShape::kDefaultPresence;
   float appliedOutTrimDb_ = OutputTrim::kDefaultTrimDb;
 };
 
