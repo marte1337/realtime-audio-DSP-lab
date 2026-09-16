@@ -4,6 +4,7 @@
 //   tdm_render --in di.wav --out processed.wav [--nam amp.nam] [--ir cab.wav]
 //              [--gate-thresh db] [--gate-rel ms] [--input-trim db]
 //              [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]
+//              [--output-trim db]
 //
 // Passing either gate flag enables TechDeathGate (the other keeps its
 // default); without gate flags the gate bypasses exactly (Milestone 0 path).
@@ -27,14 +28,15 @@ void usage()
 {
   std::printf("usage: tdm_render --in di.wav --out processed.wav [--nam amp.nam] [--ir cab.wav] "
               "[--gate-thresh db] [--gate-rel ms] [--input-trim db]\n"
-              "       [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n");
+              "       [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n"
+              "       [--output-trim db]\n");
 }
 } // namespace
 
 int main(int argc, char** argv)
 {
   std::string inPath, outPath, namPath, irPath, gateThresh, gateRel, inputTrim;
-  std::string tight, drive, bite;
+  std::string tight, drive, bite, outputTrim;
   bool driveEnable = false;
   for (int i = 1; i < argc; ++i)
   {
@@ -70,6 +72,8 @@ int main(int argc, char** argv)
       need("--drive", drive);
     else if (a == "--bite")
       need("--bite", bite);
+    else if (a == "--output-trim")
+      need("--output-trim", outputTrim);
     else
     {
       usage();
@@ -112,6 +116,8 @@ int main(int argc, char** argv)
       rig.loadNam(namPath);
     if (!irPath.empty())
       rig.loadIr(irPath);
+    if (!outputTrim.empty())
+      rig.setOutputTrimDb(std::stof(outputTrim));
 
     const int total = static_cast<int>(in.samples.size());
     std::vector<float> out(static_cast<size_t>(total), 0.0f);
@@ -130,10 +136,10 @@ int main(int argc, char** argv)
       if (std::fabs(v) > peak)
         peak = std::fabs(v);
     tdm::writeWavFloat32(outPath, const_cast<const float**>(outPtrs), 1, total, in.sampleRate);
-    std::printf("rendered %d frames @ %.0f Hz (nam=%s ir=%s gate=%s trim=%.1f drive=%s) peak=%.4f -> %s\n",
+    std::printf("rendered %d frames @ %.0f Hz (nam=%s ir=%s gate=%s trim=%.1f drive=%s out trim=%.1f) peak=%.4f -> %s\n",
                 total, in.sampleRate, namPath.empty() ? "-" : namPath.c_str(),
                 irPath.empty() ? "-" : irPath.c_str(), rig.isGateEnabled() ? "on" : "off", rig.inputTrimDb(),
-                rig.isDriveEnabled() ? "on" : "off", peak, outPath.c_str());
+                rig.isDriveEnabled() ? "on" : "off", rig.outputTrimDb(), peak, outPath.c_str());
     return 0;
   }
   catch (const std::exception& e)

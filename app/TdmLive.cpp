@@ -9,6 +9,7 @@
 //   tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms]
 //              [--input-trim db]
 //              [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]
+//              [--output-trim db]
 //   tdm_live --list            (show audio devices and exit)
 //
 // Passing either gate flag enables TechDeathGate (the other keeps its
@@ -293,7 +294,7 @@ int listDevices()
 int main(int argc, char** argv)
 {
   std::string namPath, irPath, gateThresh, gateRel, inputTrim;
-  std::string tight, drive, bite;
+  std::string tight, drive, bite, outputTrim;
   bool driveEnable = false;
   for (int i = 1; i < argc; ++i)
   {
@@ -306,7 +307,7 @@ int main(int argc, char** argv)
       continue;
     }
     if ((a == "--nam" || a == "--ir" || a == "--gate-thresh" || a == "--gate-rel" || a == "--input-trim"
-         || a == "--tight" || a == "--drive" || a == "--bite")
+         || a == "--tight" || a == "--drive" || a == "--bite" || a == "--output-trim")
         && i + 1 < argc)
     {
       if (a == "--nam")
@@ -323,12 +324,15 @@ int main(int argc, char** argv)
         tight = argv[++i];
       else if (a == "--drive")
         drive = argv[++i];
-      else
+      else if (a == "--bite")
         bite = argv[++i];
+      else
+        outputTrim = argv[++i];
       continue;
     }
     std::printf("usage: tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms] "
-                "[--input-trim db] [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1] | --list\n");
+                "[--input-trim db] [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n"
+                "       [--output-trim db] | --list\n");
     return 2;
   }
 
@@ -376,6 +380,8 @@ int main(int argc, char** argv)
       rig.loadNam(namPath);
     if (!irPath.empty())
       rig.loadIr(irPath);
+    if (!outputTrim.empty())
+      rig.setOutputTrimDb(std::stof(outputTrim));
     MonoRing ring(1u << 15);
     ctx.rig = &rig;
     ctx.ring = &ring;
@@ -386,10 +392,10 @@ int main(int argc, char** argv)
     halCheck(AudioDeviceStart(inDev, inProc), "start input");
     halCheck(AudioDeviceStart(outDev, outProc), "start output");
 
-    std::printf("live: in=%dch out=%dch %.0fHz block<=%d nam=%s ir=%s gate=%s trim=%.1f drive=%s\n",
+    std::printf("live: in=%dch out=%dch %.0fHz block<=%d nam=%s ir=%s gate=%s trim=%.1f drive=%s out trim=%.1f\n",
                 ctx.inChannels, ctx.outChannels, outSr, ctx.maxBlock, rig.hasNam() ? "yes" : "no",
                 rig.hasIr() ? "yes" : "no", rig.isGateEnabled() ? "on" : "off", rig.inputTrimDb(),
-                rig.isDriveEnabled() ? "on" : "off");
+                rig.isDriveEnabled() ? "on" : "off", rig.outputTrimDb());
     std::printf("press q + Enter to quit\n");
     char line[64] = {};
     while (std::fgets(line, sizeof(line), stdin) != nullptr)

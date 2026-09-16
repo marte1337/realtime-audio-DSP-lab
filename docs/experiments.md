@@ -328,3 +328,96 @@ sidechain-aware low-string handling.
   for any future tone control (ToneShape).
 - Quadrature-correlation fundamental measurement is the right test tool
   whenever a waveshaper sits in the measured path (peak/RMS lie).
+
+---
+
+## Date
+
+2026-09-16
+
+### Module
+
+OutputTrim (gain-staging correction, no gate retune)
+
+### Hypothesis
+
+Amp comparison needs post-chain loudness matching that leaves NAM drive,
+saturation, compression, and gain structure untouched. A manually
+controlled scalar gain stage after Cabinet IR separates the two jobs that
+Input Trim was incorrectly doing double duty for:
+
+- Input Trim (pre Gate/TightDrive/NAM): interface/guitar calibration;
+  intentionally changes the level feeding nonlinear stages and therefore
+  the NAM response.
+- Output Trim (post NAM + IR): loudness matching / preset and model
+  compensation; changes listening level only.
+
+### Implementation
+
+`dsp/OutputTrim.h/.cpp`, inserted after Cabinet IR in `TechDeathRig`
+(... → NAM → IR → Output Trim → broadcast). Pure linear gain, dB in /
+linear internally, range -24..+24 dB, default 0 dB, clamped. Smoothing:
+one-pole lowpass on the applied linear gain, tau ~10 ms, coefficient
+recomputed in `reset()` from the sample rate (same idiom as InputTrim;
+per the InputTrim log entry this stays a per-module pattern — two uses do
+not justify a shared gain framework). `reset()` snaps applied gain exactly
+to target, so 0 dB passes bit-exactly from the first sample. No limiter,
+compressor, clipping, normalization, auto-gain, or analysis of any kind.
+No output protection by design: over-unity float results are preserved and
+the user (or later host handling) owns safe audition levels.
+
+### Audition setup
+
+Reference measurements (same synthetic DI, same IR, Gate/Drive off,
+Input Trim 0 dB):
+
+- Powerball test capture: approximately -34.83 dBFS RMS
+- 5150 II Crunch: approximately -16.03 dBFS RMS
+- Mesa Red: approximately -20.38 dBFS RMS
+
+Powerball sits ~18.8 dB below the 5150 and ~14.4 dB below the Mesa, inside
+the +/-24 dB range with margin. Mesa Red is the temporary loudness
+reference. Starting compensations (RMS-derived, verify by ear, do NOT
+hard-code as defaults): Powerball +14.45 dB, Mesa 0 dB, 5150 -4.36 dB.
+These may later become per-preset/per-model metadata; this stage needs no
+changes to support that (a preset layer would just call setOutputTrimDb).
+
+### Expected behavior
+
+What should change: relative loudness of captures at fixed drive feel.
+
+What should remain unchanged: NAM saturation/compression character per
+model at matched loudness; gate and drive behavior (verified: gate/trim/
+drive suites green, no files modified there); M0-and-later path bit-exact
+at 0 dB (verified: trim-0 full-chain render byte-identical to previous).
+
+### Listening result
+
+NOT YET AUDITIONED. Confirm the three captures feel equally loud at the
+starting compensations without feeling like different amps than at
+reference (i.e. drive character preserved, only level moved).
+
+### Problems
+
+None observed offline. Automated suite: 252 checks, 0 failures (34 new
+outtrim checks), incl. a gate-transition ratio test proving the trim is
+pure post scaling, and an unclipped >1.0 Rails test. Known non-issues:
+settled gain stalls ~5e-4 absolute from target in float (inaudible);
+trim moves take ~100 ms to fully settle (by design, zipper-free);
+`tdm_live --list` throws on headless machines (no CoreAudio devices;
+untouched code path, environmental).
+
+### Next step
+
+Run the level-matched three-amp comparison; record the by-ear trims next
+to the RMS-derived starting points. Then repeat the gate audition at
+corrected level. Later: per-NAM compensation metadata in curated presets.
+
+### Transferable learning
+
+- Upstream/downstream test-ratio technique (out(+X)/out(0) == linear(X)
+  at every audible sample, incl. through gate transitions) is a reusable
+  pattern for proving any future post stage is side-effect free.
+- Second data point for the InputTrim log note: two copies of the trivial
+  one-pole gain smoother still do not justify a framework. Revisit at
+  three.

@@ -1,7 +1,7 @@
 #pragma once
 
 // Rig: Input -> Input Trim -> TechDeathGate -> TightDrive -> NAM A2
-//   -> Cabinet IR -> Output.
+//   -> Cabinet IR -> Output Trim -> Output.
 //
 // Mono internal path. Multi-channel input is averaged to mono (documented
 // choice: avoids the +6 dB surprise of summing; stereo width tricks come
@@ -10,6 +10,8 @@
 // exactly until explicitly enabled, preserving Milestone 0 behavior.
 // Input Trim defaults to 0 dB, at which it passes input bit-exactly.
 // TightDrive is disabled by default and bypasses exactly when off.
+// Output Trim defaults to 0 dB, at which it passes input bit-exactly; it
+// only changes post-chain listening level, never NAM drive.
 
 #include <string>
 #include <vector>
@@ -19,6 +21,7 @@
 #include "dsp/NamStage.h"
 #include "dsp/TechDeathGate.h"
 #include "dsp/TightDrive.h"
+#include "dsp/OutputTrim.h"
 
 namespace tdm
 {
@@ -59,6 +62,12 @@ public:
   void setBite(float v) { drive_.setBite(v); }
   bool isDriveEnabled() const { return drive_.isEnabled(); }
 
+  // Output Trim control (off-RT setter). Defaults to 0 dB, which passes
+  // input bit-exactly and preserves existing behavior. Post-chain only:
+  // loudness matching without touching NAM saturation or drive response.
+  void setOutputTrimDb(float db) { outTrim_.setTrimDb(db); }
+  float outputTrimDb() const { return outTrim_.trimDb(); }
+
   // RT-safe after reset(). inputs[nIn][nFrames] -> outputs[nOut][nOut].
   void processBlock(const float* const* inputs, int numInputChannels, float* const* outputs,
                     int numOutputChannels, int numFrames);
@@ -69,6 +78,7 @@ private:
   TightDrive drive_;
   NamStage nam_;
   CabIrStage ir_;
+  OutputTrim outTrim_;
   std::vector<float> mono_; // internal scratch, sized maxBlock_
   double sampleRate_ = 0.0;
   int maxBlock_ = 0;

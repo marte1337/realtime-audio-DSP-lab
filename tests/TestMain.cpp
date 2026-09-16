@@ -12,6 +12,7 @@ void runRigTests();
 void runGateTests();
 void runTrimTests();
 void runTightDriveTests();
+void runOutputTrimTests();
 
 namespace
 {
@@ -44,6 +45,7 @@ int main()
   runSuite("gate", runGateTests);
   runSuite("trim", runTrimTests);
   runSuite("drive", runTightDriveTests);
+  runSuite("outtrim", runOutputTrimTests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());
   for (const auto& f : tdm_test::failures())
     std::printf("  FAIL %s\n", f.c_str());
