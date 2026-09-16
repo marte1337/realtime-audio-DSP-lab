@@ -26,7 +26,7 @@ STD := -std=c++20
 OPT := -O2
 DEFS := -DNAM_ENABLE_A2_FAST
 INCLUDES := -I$(NAM_CORE_DIR) -I$(EIGEN_DIR) -I$(JSON_DIR) -I.
-TDM_FLAGS := $(STD) $(OPT) -Wall -Wextra $(DEFS) $(INCLUDES) $(SYSINCLUDES)
+TDM_FLAGS := $(STD) $(OPT) -Wall -Wextra $(DEFS) $(INCLUDES) $(SYSINCLUDES) -MMD -MP
 NAM_FLAGS := $(STD) $(OPT) -w $(DEFS) -I$(NAM_CORE_DIR) -I$(EIGEN_DIR) -I$(JSON_DIR) $(SYSINCLUDES)
 
 NAM_SRCS := $(wildcard $(NAM_CORE_DIR)/NAM/*.cpp) $(wildcard $(NAM_CORE_DIR)/NAM/wavenet/*.cpp)
@@ -35,13 +35,23 @@ NAM_OBJS := $(patsubst $(NAM_CORE_DIR)/%.cpp,$(NAMOBJ)/%.o,$(NAM_SRCS))
 TDM_SRCS := dsp/NamStage.cpp dsp/CabIrStage.cpp dsp/WavFile.cpp dsp/TechDeathRig.cpp dsp/Gate/TechDeathGate.cpp dsp/InputTrim.cpp dsp/TightDrive/TightDrive.cpp dsp/OutputTrim.cpp
 TDM_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TDM_SRCS))
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestOutputTrim.cpp
+# Live-audio host layer (CoreAudio duplex). Kept OUT of TDM_OBJS so the
+# offline tests and tdm_render stay portable and framework-free.
+ENGINE_SRCS := host/TdmEngine.cpp
+ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
+
+# Developer Control App (native AppKit, Objective-C++ with ARC).
+DEV_SRCS := host/dev/TdmDevApp.mm
+DEV_OBJS := $(patsubst %.mm,$(BUILD)/%.o,$(DEV_SRCS))
+
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestOutputTrim.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 FRAMEWORKS := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
+DEV_FRAMEWORKS := $(FRAMEWORKS) -framework Cocoa -framework UniformTypeIdentifiers
 
 .PHONY: all test smoke clean check-deps
-all: check-deps $(BUILD)/tdm_tests $(BUILD)/tdm_render $(BUILD)/tdm_live
+all: check-deps $(BUILD)/tdm_tests $(BUILD)/tdm_render $(BUILD)/tdm_live $(BUILD)/tdm_dev
 
 check-deps:
 	@test -d "$(NAM_CORE_DIR)/NAM" || (echo "error: NAM_CORE_DIR not found: $(NAM_CORE_DIR)"; exit 1)
@@ -56,14 +66,23 @@ $(BUILD)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(TDM_FLAGS) -c $< -o $@
 
+$(BUILD)/%.o: %.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(TDM_FLAGS) -fobjc-arc -c $< -o $@
+
+-include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d
+
 $(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS)
 	$(CXX) $(STD) $^ -o $@
 
 $(BUILD)/tdm_render: $(TDM_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmRender.o
 	$(CXX) $(STD) $^ -o $@
 
-$(BUILD)/tdm_live: $(TDM_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmLive.o
+$(BUILD)/tdm_live: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmLive.o
 	$(CXX) $(STD) $^ $(FRAMEWORKS) -o $@
+
+$(BUILD)/tdm_dev: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(DEV_OBJS)
+	$(CXX) $(STD) $^ $(DEV_FRAMEWORKS) -o $@
 
 test: $(BUILD)/tdm_tests
 	./$(BUILD)/tdm_tests

@@ -9,6 +9,7 @@ void runWavTests();
 void runCabIrTests();
 void runNamTests();
 void runRigTests();
+void runRigParamsTests();
 void runGateTests();
 void runTrimTests();
 void runTightDriveTests();
@@ -42,6 +43,7 @@ int main()
   runSuite("cabir", runCabIrTests);
   runSuite("nam", runNamTests);
   runSuite("rig", runRigTests);
+  runSuite("rigparams", runRigParamsTests);
   runSuite("gate", runGateTests);
   runSuite("trim", runTrimTests);
   runSuite("drive", runTightDriveTests);

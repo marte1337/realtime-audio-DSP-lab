@@ -213,9 +213,9 @@ void runTrimTests()
     for (int i = 0; i < 1024; ++i)
       exact = exact && out[static_cast<size_t>(i)] == in[static_cast<size_t>(i)];
     TDM_CHECK(exact, "0 dB trim preserves M0 path bit-exactly");
-    // -30 dB tone vs -20 dB gate threshold: closed without trim...
-    std::vector<float> soft = sine(dbToLinear(-30.0f), 220.0f, 48000.0, 9600);
-    rig.setGateThresholdDb(-20.0f);
+    // -45 dB tone vs -35 dB gate threshold: closed without trim...
+    std::vector<float> soft = sine(dbToLinear(-45.0f), 220.0f, 48000.0, 9600);
+    rig.setGateThresholdDb(-35.0f);
     rig.setGateEnabled(true);
     std::vector<float> closed(9600);
     bo[0] = closed.data();
@@ -227,12 +227,12 @@ void runTrimTests()
     // ...+12 dB trim lifts it over the threshold: tone passes at +12 dB.
     rig.reset(48000.0, 512);
     rig.setInputTrimDb(12.0f);
-    rig.setGateThresholdDb(-20.0f);
+    rig.setGateThresholdDb(-35.0f);
     rig.setGateEnabled(true);
     std::vector<float> opened(9600);
     bo[0] = opened.data();
     rig.processBlock(bi, 1, bo, 1, 9600);
-    const float want = dbToLinear(-30.0f + 12.0f);
+    const float want = dbToLinear(-45.0f + 12.0f);
     TDM_CHECK_CLOSE(tdm_test::peakAbs(opened.data(), 9600), want, 1e-3f, "trim lifts tone over gate");
   }
 }

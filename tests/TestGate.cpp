@@ -53,7 +53,7 @@ void runGateTests()
   {
     tdm::TechDeathGate g;
     TDM_CHECK(!g.isEnabled(), "opt-in: starts disabled");
-    TDM_CHECK_CLOSE(g.thresholdDb(), -40.0f, 1e-6f, "default threshold");
+    TDM_CHECK_CLOSE(g.thresholdDb(), -55.0f, 1e-6f, "default threshold");
     TDM_CHECK_CLOSE(g.releaseMs(), 50.0f, 1e-6f, "default release");
   }
   // Bypass (disabled, or enabled without reset) copies exactly, in place too.
@@ -112,10 +112,12 @@ void runGateTests()
     TDM_CHECK(maxDiff < 1e-4f, "fully open passes tone unchanged");
   }
   // Clearly below threshold: never opens, suppressed ~80 dB (floor).
+  // Explicit -40 dB threshold (the -55 dB default would pass this tone).
   {
     tdm::TechDeathGate g;
     g.reset(48000.0);
     g.setEnabled(true);
+    g.setThresholdDb(-40.0f);
     std::vector<float> in = tone(-50.0f, 220.0f, 48000.0, 0.0f, 4800);
     std::vector<float> out;
     processAll(g, in, out);
@@ -150,6 +152,7 @@ void runGateTests()
       tdm::TechDeathGate g;
       g.reset(sr);
       g.setEnabled(true);
+      g.setThresholdDb(-40.0f); // explicit: timing math below assumes this close level
       g.setReleaseMs(rel);
       std::vector<float> loud = tone(-6.0f, 220.0f, sr, 0.0f, 4096);
       std::vector<float> tmp;
@@ -171,10 +174,13 @@ void runGateTests()
     }
   }
   // Hysteresis + hold: low sustained note never flutters (exactly one close).
+  // Explicit -40 dB: the decay probe only falls to -45 dB, which would sit
+  // above the new -55 dB default open level and never close.
   {
     tdm::TechDeathGate g;
     g.reset(48000.0);
     g.setEnabled(true);
+    g.setThresholdDb(-40.0f);
     std::vector<float> in = tone(-30.0f, 82.41f, 48000.0, 0.0f, 9600); // 200 ms low E
     std::vector<float> out(9600);
     int closes = 0;
@@ -264,23 +270,27 @@ void runGateTests()
     tdm::TechDeathGate g;
     g.reset(48000.0);
     g.setEnabled(true);
-    g.setThresholdDb(-60.0f); // very permissive: -55 dB tone passes
-    std::vector<float> soft = tone(-55.0f, 220.0f, 48000.0, 0.0f, 9600);
+    g.setThresholdDb(-80.0f); // very permissive: -75 dB tone passes
+    std::vector<float> soft = tone(-75.0f, 220.0f, 48000.0, 0.0f, 9600);
     std::vector<float> out;
     processAll(g, soft, out);
     TDM_CHECK(tdm_test::peakAbs(out.data(), 9600) > 0.8f * tdm_test::peakAbs(soft.data(), 9600),
               "permissive threshold passes soft tone");
     g.reset(48000.0);
     g.setEnabled(true);
-    g.setThresholdDb(-20.0f); // extremely tight: -30 dB tone suppressed
-    std::vector<float> mid = tone(-30.0f, 220.0f, 48000.0, 0.0f, 9600);
+    g.setThresholdDb(-35.0f); // extremely tight: -45 dB tone suppressed
+    std::vector<float> mid = tone(-45.0f, 220.0f, 48000.0, 0.0f, 9600);
     processAll(g, mid, out);
     const float ratio = tdm_test::peakAbs(out.data(), 9600) / tdm_test::peakAbs(mid.data(), 9600);
     TDM_CHECK(ratio < 0.001f, "tight threshold suppresses mid tone");
     g.setThresholdDb(-100.0f);
-    TDM_CHECK_CLOSE(g.thresholdDb(), -60.0f, 1e-6f, "threshold clamps low");
+    TDM_CHECK_CLOSE(g.thresholdDb(), -80.0f, 1e-6f, "threshold clamps low");
     g.setThresholdDb(0.0f);
-    TDM_CHECK_CLOSE(g.thresholdDb(), -20.0f, 1e-6f, "threshold clamps high");
+    TDM_CHECK_CLOSE(g.thresholdDb(), -35.0f, 1e-6f, "threshold clamps high");
+    g.setThresholdDb(-80.0f);
+    TDM_CHECK_CLOSE(g.thresholdDb(), -80.0f, 1e-6f, "threshold min passes through");
+    g.setThresholdDb(-35.0f);
+    TDM_CHECK_CLOSE(g.thresholdDb(), -35.0f, 1e-6f, "threshold max passes through");
     g.setReleaseMs(1.0f);
     TDM_CHECK_CLOSE(g.releaseMs(), 10.0f, 1e-6f, "release clamps low");
     g.setReleaseMs(5000.0f);
@@ -348,8 +358,9 @@ void runGateTests()
   // sustained above-threshold resonance ghosts at most once per event and
   // rapid cycling is impossible. The pair counting below pins that down
   // (v1.1 produces one pair here; pre-v1.1 code reopened on every blip).
-  // NOTE: this test runs at the default -40 dB threshold, so the bar sits
-  // at -28 dB; the -50 dB reference behavior is covered by the v1.2 tests.
+  // NOTE: this test pins the pre-retune -40 dB threshold explicitly, so
+  // the bar sits at -28 dB; the -50 dB reference behavior is covered by
+  // the v1.2 tests.
   {
     const double sr = 48000.0;
     const int n = static_cast<int>(sr * 2.4);
@@ -382,6 +393,7 @@ void runGateTests()
     tdm::TechDeathGate g;
     g.reset(sr);
     g.setEnabled(true);
+    g.setThresholdDb(-40.0f); // explicit: blip levels are calibrated to this bar
     std::vector<float> out(static_cast<size_t>(n));
     int closesInZone = 0, opensInZone = 0, closesTotal = 0;
     bool wasOpen = false, openAtBlip2 = false;
@@ -421,6 +433,7 @@ void runGateTests()
       tdm::TechDeathGate g;
       g.reset(sr);
       g.setEnabled(true);
+      g.setThresholdDb(-40.0f); // explicit: trio levels are calibrated to this bar
       std::vector<float> loud = tone(-6.0f, 220.0f, sr, 0.0f, 9600);
       std::vector<float> tmp;
       processAll(g, loud, tmp);

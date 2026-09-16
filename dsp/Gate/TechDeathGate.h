@@ -55,10 +55,14 @@ namespace tdm
 class TechDeathGate
 {
 public:
-  // Public v1 parameters.
-  static constexpr float kMinThresholdDb = -60.0f; // very permissive
-  static constexpr float kMaxThresholdDb = -20.0f; // extremely tight
-  static constexpr float kDefaultThresholdDb = -40.0f;
+  // Public v1 parameters. Range retuned from real-guitar auditioning
+  // (2026-09-16): the old -60..-20 dB span wasted most of its travel on
+  // unusably aggressive values. -80 dB is very permissive (lets quiet
+  // pickup/residue detail through), -35 dB is extremely tight, and the
+  // -55 dB default is the current audition reference.
+  static constexpr float kMinThresholdDb = -80.0f; // very permissive
+  static constexpr float kMaxThresholdDb = -35.0f; // extremely tight
+  static constexpr float kDefaultThresholdDb = -55.0f;
   static constexpr float kMinReleaseMs = 10.0f; // machine-like stops
   static constexpr float kMaxReleaseMs = 500.0f; // natural sustain
   static constexpr float kDefaultReleaseMs = 50.0f;

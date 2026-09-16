@@ -299,7 +299,7 @@ void runOutputTrimTests()
     auto runRig = [&](float outDb) {
       tdm::TechDeathRig rig;
       rig.reset(48000.0, 512);
-      rig.setGateThresholdDb(-30.0f);
+      rig.setGateThresholdDb(-35.0f);
       rig.setGateEnabled(true);
       rig.setOutputTrimDb(outDb);
       std::vector<float> tmp(48000), o(9600);
