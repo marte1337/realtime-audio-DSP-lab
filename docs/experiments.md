@@ -421,3 +421,336 @@ corrected level. Later: per-NAM compensation metadata in curated presets.
 - Second data point for the InputTrim log note: two copies of the trivial
   one-pole gain smoother still do not justify a framework. Revisit at
   three.
+
+## Date
+
+2026-09-16
+
+### Module
+
+TechDeathGate v1.1 closing refinement (hard stop kept, crackle removed)
+
+### Hypothesis
+
+The real-guitar audition found the gate fundamentally useful and aggressive
+at ~52 ms Release, but closing felt excessively hard and sometimes produced
+small crackle/fragment artifacts. Two distinct mechanisms, both in the gate
+only:
+
+1. Hardness: the hold-to-release boundary is a slope discontinuity (a
+   single-pole fade falls fastest at its first sample, ~1.15 dB/ms at
+   52 ms), heard as an abrupt grab at the stop.
+2. Crackle: NOT a gain discontinuity (gain is continuous everywhere).
+   Faint tail residue, hum, and sympathetic-string blips hovering just above
+   Threshold re-cross the open level after a close, punching the ~0.15 ms
+   attack back open for isolated 10-40 ms bursts. Offline probes measured a
+   train of 5 such open/close episodes (15-39 ms each, first-sample jumps up
+   to 62 dB) on decaying guitar-like material. Hold only delays the first
+   close; nothing guarded reopening, so each blip became one fragment.
+
+Downstream (TightDrive+NAM) was investigated as a suspect and cleared as a
+reshaper: probes show the gate tail is always sub -44 dBFS when the fade
+starts (release requires 8 ms below the close level first), so TightDrive
+stays in its linear zone there and its output tracks the gate fade. The
+amp's small-signal gain is the audibility multiplier (why a -37 dBFS
+fragment is clearly heard), not a second cliff.
+
+### Implementation
+
+`dsp/TechDeathGate.h/.cpp` only. No new controls, no latency, no attack
+change, no Trim/Drive/NAM/IR touch. Two internal mechanisms:
+
+- Cascaded release: closing runs through a two-stage follower cascade
+  (intermediate stage feeds the applied gain, both sharing one
+  coefficient). Fade follows (1+t/tau)*e^(-t/tau): starts with zero slope
+  (soft knee), steepens mid-release. tau = Release/9.23 keeps Release
+  defined as the total 60 dB fall time, so the ~52 ms stop timing is
+  preserved and the existing release-timing tests (3 rates x 10/50/500 ms)
+  pass unmodified.
+- Reopen reluctance: for 60 ms after each close, reopening needs
+  Threshold + 6 dB instead of Threshold. Faint residue cannot retrigger the
+  fast attack; real pick attacks (tens of dB hotter) clear the bar with zero
+  extra delay, and after the window the normal Threshold applies again, so
+  steady-state threshold behavior is unchanged.
+
+Release semantics: unchanged (60 dB fall time). Release contour: changed
+from exponential to S-curve (gentler first ~10 ms, identical silence point).
+A sustained above-threshold resonance after a stop still ghosts exactly
+once per event; rapid cycling is what was removed. That single-ghost
+behavior is pinned by tests as correct threshold operation, not chatter.
+
+### Expected behavior
+
+What should change: stops land slightly softer at the very first
+milliseconds, then stop just as fast; the intermittent crackle/fragments
+during closing are gone.
+
+What should remain unchanged: ~52 ms stop/start feel, attack immediacy,
+Threshold behavior (a -38 dB sustained tone still opens the gate),
+palm-mute tightness (5-chug proxy: attacks survive, gaps go fully silent),
+bypass, all Trims/Drive/NAM/IR.
+
+### Listening guide (for the audition below)
+
+1. Physically: the fade now eases in over ~10 ms instead of grabbing
+   instantly, then falls at the same overall rate; faint post-stop
+   resonances can no longer machine-gun the attack stage.
+2. Changing: gate close contour + post-close reopen guard only.
+3. Constant: Input Trim 0 dB, TightDrive 0.85/0.50/0.70, 6505 unboosted
+   NAM, Mesa V30 IR, Output Trim +2.6 dB, Threshold, Release 52 ms.
+4. Should feel like: the same locked-in brutal stop, but the initial edge
+   is clean rather than hard, and choked stops decay into silence with no
+   fizzing/crackling tail.
+5. Bug indicators: any rapid stuttering after a stop (guard failing);
+   sluggish or softened pick attacks (bar too high — should be impossible,
+   attacks clear it by 20+ dB); audibly later silence point (timing drift);
+   low sustained notes cutting out (hold/cascade regression).
+
+Audition command (flag syntax verified against app/TdmLive.cpp; substitute
+your local 6505_unboost.nam and Mesa V30 IR paths — no curated models/IRs
+are vendored in the repo):
+
+./build/tdm_live --nam <path-to>/6505_unboost.nam --ir <path-to>/MesaV30.wav \
+  --input-trim 0 --gate-thresh -40 --gate-rel 52 \
+  --tight-drive --tight 0.85 --drive 0.50 --bite 0.70 \
+  --output-trim 2.6
+
+### Listening result
+
+NOT YET AUDITIONED. The offline evidence is strong (probe-measured
+fragment train eliminated in simulation; attended criteria all green), but
+per project rules passing tests never replace the ear: confirm the stop
+still feels brutal at 52 ms and the crackle is gone on real chugs and
+single-note stops.
+
+### Problems
+
+None observed offline. Automated suite: 281 checks, 0 failures (29 new
+gate checks: S-knee slope, blip-flurry pair counting, attack trio,
+palm-mute proxy). Old-vs-new verification: the committed scenarios were
+run against pristine HEAD gate sources — old code fails the knee slope
+(early drop 0.129 vs mid 0.043, i.e. steepest at start), reopens once per
+flurry blip (3 fragment pairs: 35/43/45 ms), and reopens on faint
+in-window residue; new code passes all. `make smoke` green (gate/drive
+renders finite and bounded).
+
+Build hazard found (not fixed, out of scope): the Makefile has no header
+dependencies, so touching a header without `make clean` links stale
+objects against a new class layout (observed as 15 phantom gate failures
+that vanished on clean rebuild). Workaround until fixed: always
+`make clean && make test` after header edits.
+
+### Next step
+
+Live audition with the command above; record whether 52 ms still feels
+like the musical stopping point and whether any fragment character
+remains. If a post-NAM cleanup stage is ever considered for sub-threshold
+tails, note it is a separate proposal, not part of this fix.
+
+### Transferable learning
+
+- A gate's crackle is usually the *reopen* path, not the release ramp:
+  instrument open/close *events with timestamps* on decaying material
+  before touching any coefficient. The 5-episode train made the fix
+  obvious (guard the bar) where a waveform alone suggested the wrong fix
+  (lengthen Release).
+- Threshold-boundary tests are cliffs: a -38 dB blip against a -40 dB
+  threshold plus hum/hiss either always or never fires depending on
+  sub-dB phase accidents. Design margins symmetrically (here: -37 dB
+  stimulus sits 3 dB above Threshold and 3 dB below the reopen bar) and
+  verify the test fails pre-fix rather than trusting hand arithmetic.
+- Single-frequency test blips phase-lock with a same-frequency tail and
+  cancel deterministically; use an incommensurate blip frequency
+  (110 Hz vs 82.41 Hz main) or cosine-phase onsets so the first peak is
+  phase-proof.
+- Poll gate *state during* decaying stimuli, not after: end-of-buffer
+  isOpen() checks are vacuous when the stimulus re-closes the gate by
+  itself.
+
+### Senior DSP review requested
+
+- Release cascade shares one coefficient across two one-pole stages
+  (critically-damped form); confirm no preferable normalization and that
+  float stall behavior near the -80 dB floor stays benign (tests show
+  settle within 1e-6 of floor; denormal risk unchanged from v1 design).
+- 60 ms / +6 dB reluctance constants are empirically sized from probe
+  trains (gaps 24-41 ms); confirm the sizing argument holds for
+  drop-tuned extended-range guitars with longer string ring.
+- Pre-NAM gate placement remains: downstream investigation cleared
+  TightDrive of reshaping the tail, but a post-NAM cleanup stage could
+  suppress sub-threshold tails further. Flagged as future proposal only.
+
+## Date
+
+2026-09-16
+
+### Module
+
+TechDeathGate v1.2 state-aware retrigger (sustained-note stutter fix)
+
+### Real-guitar reference update
+
+The -40 dB threshold reference was too high for the actual guitar DI:
+normal initial picks could be gated. The usable reference is now
+approximately **-50 dB** (threshold range unchanged, still -60..-20 dB;
+no auto-calibration added). Release 52 ms still feels musically
+appropriate; the v1.1 two-stage release contour is kept unchanged.
+
+### Hypothesis (confirmed by probes before any code change)
+
+v1.1 fixed close-edge hardness but real sustained notes exposed repeated
+retrigger/stutter: OPEN -> CLOSE -> OPEN -> CLOSE ... on one unre-picked
+note. Suspect: the fixed 60 ms reopen-protection window is the wrong
+abstraction — a sustained note keeps decaying and beating long after any
+fixed window expires, and each re-crossing of the normal open threshold
+then stutters the gate again.
+
+Probe evidence (temporary offline probes, threshold -50 dB, release
+52 ms, current v1.1 code): a 4 s beating low-E sustain (harmonics, +/-3 dB
+beating, hum, hiss, ~2 s dwelling near threshold) produced **11
+open/close cycles over 2.1 s** (e.g. CLOSE 854.7 ms, OPEN 918.7 ms,
+CLOSE 945.3 ms, ... last event 2946.7 ms). A 3 s low-B proxy produced
+12 opens / 11 closes. Hypothesis confirmed: expiry of the fixed window
+while the tail still beats is exactly the stutter mechanism. The release
+contour itself is not implicated (gain only follows the cycling
+comparator), so it was left alone.
+
+Probe-measured sizing data: worst residual beat peak after the close was
+-44.1 dBFS (+5.9 dB above the -50 dB threshold); longest sub-close
+valley in beating was 20.7 ms.
+
+### Implementation
+
+`dsp/TechDeathGate.h/.cpp` only. The boolean open flag plus 60 ms timer
+became an explicit CLOSED -> OPEN -> CLOSING -> CLOSED state machine:
+
+- CLOSED: normal Threshold opens with zero delay (no permanent penalty).
+- OPEN: unchanged, incl. 8 ms hold bridging ripple valleys.
+- CLOSING: release fade keeps running (v1.1 cascade untouched), but
+  reopening needs Threshold + 12 dB (retrigger bar) for as long as the
+  tail takes — no expiry. Back to CLOSED after 250 ms continuously below
+  the close level; any louder peak restarts the confirmation.
+
+Why +12 dB / 250 ms: +12 holds ~6 dB headroom over the worst measured
+beat peak (+5.9 dB); 250 ms is ~12x the longest measured beat valley
+(20.7 ms), so beating cannot fake "tail gone" but real silence restores
+normal threshold semantics promptly. A transient/rising-slope criterion
+was investigated and rejected: faint blips with sharp onsets (the v1.1
+flurry) would retrigger through it and regress the crackle fix —
+amplitude alone separates residue from repicks.
+
+The fixed 60 ms window was therefore REPLACED, not retained. Public
+controls still Threshold + Release only; no latency added; RT contract
+unchanged (two scalar ints + enum replace two scalar ints; still no
+allocation/locks/IO, deterministic).
+
+### Expected behavior
+
+What should change: sustained notes close exactly once and stay shut
+through arbitrarily long beating tails; no stutter.
+
+What should remain unchanged: brutal 52 ms stop/start feel, immediate
+opening from fully closed, v1.1 release contour, attack immediacy for
+real picks, bypass, all Trims/Drive/NAM/IR.
+
+### Listening guide (for the audition below)
+
+1. Physically: once the gate commits to closing, only a new attack 12 dB
+   above Threshold reopens it; tail beating below that rides the fade to
+   silence. After 250 ms of true quiet the normal threshold resumes.
+2. Changing: gate retrigger logic only (state machine + bar + confirm).
+3. Constant: Input Trim 0 dB, TightDrive 0.85/0.50/0.70, 6505 unboosted
+   NAM, Mesa V30 IR, Output Trim +2.6 dB, Threshold -50 dB, Release 52 ms.
+4. Should feel like: stops and sustained notes end cleanly with a single
+   decisive close; fast repicks and chugs respond exactly as before.
+5. Bug indicators: any stuttering tail (bar too low); missed soft repicks
+   just above -38 dBFS during a ringing tail (bar too high — but see the
+   documented tradeoff); sluggish attacks (must not happen: attacks clear
+   the bar by 20+ dB with zero added delay).
+
+Audition command (flag syntax verified against app/TdmLive.cpp; substitute
+your local 6505_unboost.nam and Mesa V30 IR paths):
+
+./build/tdm_live --nam <path-to>/6505_unboost.nam --ir <path-to>/MesaV30.wav \
+  --input-trim 0 --gate-thresh -50 --gate-rel 52 \
+  --tight-drive --tight 0.85 --drive 0.50 --bite 0.70 \
+  --output-trim 2.6
+
+### Listening result
+
+NOT YET AUDITIONED. Offline evidence: the probe-measured 11-cycle
+stutter collapses to exactly 1 open + 1 close; repicks at -12/-24/-32/-36
+dB reopen within ~0 ms during CLOSING; chugs unaffected. Ear confirmation
+still required per project rules.
+
+### Problems
+
+None observed offline. Automated suite: 363 checks, 0 failures (82 new
+v1.2 gate checks across 44.1/48/96 kHz). Pre-fix failure observed on the
+live v1.1 tree via probes (11-cycle stutter on the same signal the new
+sustained-note test uses); the new tradeoff/flurry tests contradict
+v1.1's window mechanism by design (documented below). `make smoke`
+green. Note: neither v1.1 nor v1.2 was committed to git, so no
+pre-fix/post-fix binary diff exists beyond the probe logs; the v1.1
+60 ms/+6 dB mechanism is fully described in the preceding log entry.
+
+### Compromise involving soft intentional repicks (pinned tradeoff)
+
+Repicks at -36 dBFS and hotter reopen within ~0 ms during CLOSING
+(tested -12/-24/-32/-36). A repick BELOW the retrigger bar (-38 dBFS at
+the -50 reference) that lands while a previous tail is still alive stays
+shut until the tail dies plus the 250 ms confirmation — committed test
+pins a -44 dB repick blocked during CLOSING yet opening normally from
+CLOSED. Once fully CLOSED, picks just above Threshold (-48 dB tested)
+engage with zero delay: no permanent penalty.
+
+### Test changes (why window-era expectations moved)
+
+- Flurry test (default -40 dB threshold): v1.1 expected one clean pair
+  (post-window reopen); v1.2's bar (-28 dB here) has no expiry, so the
+  whole -37 dB flurry stays shut: counts updated 2/1/4 -> 1/0/3. Blip2
+  still opens once fully CLOSED.
+- Attack trio: checks unchanged in substance (hot opens, faint blocked,
+  late faint opens); comments updated from "window" to "CLOSING/CLOSED".
+- Added: sustained low-E single-close (3 rates), low-B no-burst tail
+  (3 rates), repick strengths -12..-36 within 2 ms (3 rates), sub-bar
+  tradeoff pin, from-CLOSED near-threshold opening, -50 dB chug proxy
+  (3 rates). Untouched and passing: bypass, release timing, attenuation,
+  reset, knee contour, all Trim/Drive/NAM/IR/rig tests.
+
+### Next step
+
+Live audition with the command above at Threshold -50 dB: confirm single
+decisive closes on sustained notes, intact fast repicks/chugs, and the
+unchanged brutal 52 ms feel.
+
+### Transferable learning
+
+- A fixed-duration guard against a non-fixed-duration phenomenon
+  (decaying/beating note) fails by construction once the timer expires
+  mid-phenomenon. Make the guard a function of STATE (CLOSING until the
+  tail is observably gone), not of elapsed time.
+- Size state thresholds from measured tail statistics (worst beat peak,
+  longest valley), not from musical time constants: +12 dB bar and
+  250 ms confirmation came straight off probe maxima with ~6-12x margin.
+- In CLOSING, "envelope above close level" must RESTART (not freeze) the
+  tail-gone confirmation, or cumulative ripple valleys across beat cycles
+  fake a dead tail and the stutter returns through the back door.
+- A sharp-onset (transient) criterion cannot separate faint flurry blips
+  from soft repicks — both have abrupt onsets. Amplitude is the only
+  separator; name the resulting soft-repick tradeoff explicitly and pin it
+  in tests.
+
+### Senior DSP review requested
+
+- +12 dB / 250 ms constants are sized from synthetic beating tails
+  (worst beat +5.9 dB, longest valley 20.7 ms); confirm headroom for
+  drop-tuned extended-range guitars with deeper/longer beating and
+  hotter DIs (residue levels are absolute, threshold-relative margins
+  shift with player level — the -50 dB reference assumes the auditioned
+  DI).
+- CLOSING band behavior (close..retrigger restarts confirmation
+  indefinitely): a slow volume swell from a live tail that never exceeds
+  the bar stays shut; assessed as contrived (real swells start from
+  CLOSED and cross Threshold normally) but flagged.
+- Pre-NAM placement question from v1.1 stands unchanged.
