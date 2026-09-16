@@ -215,4 +215,51 @@ void runRigParamsTests()
     writer.join();
     TDM_CHECK(finite, "concurrent param hammer stays finite");
   }
+  // Canonical-default contract (the dev UI sources double-click reset
+  // values from these same stage constants): a default RigParams must
+  // mirror every DSP default exactly, with the literal values pinned so a
+  // silent default change breaks loudly here, not in the UI.
+  {
+    const tdm::RigParams p;
+    TDM_CHECK(p.inputTrimDb == tdm::InputTrim::kDefaultTrimDb, "params mirror trim default");
+    TDM_CHECK(!p.gateEnabled, "params gate off");
+    TDM_CHECK(p.gateThresholdDb == tdm::TechDeathGate::kDefaultThresholdDb, "params mirror gate thresh");
+    TDM_CHECK(p.gateReleaseMs == tdm::TechDeathGate::kDefaultReleaseMs, "params mirror gate release");
+    TDM_CHECK(!p.driveEnabled, "params drive off");
+    TDM_CHECK(p.tight == tdm::TightDrive::kDefaultTight, "params mirror tight");
+    TDM_CHECK(p.drive == tdm::TightDrive::kDefaultDrive, "params mirror drive");
+    TDM_CHECK(p.bite == tdm::TightDrive::kDefaultBite, "params mirror bite");
+    TDM_CHECK(p.outputTrimDb == tdm::OutputTrim::kDefaultTrimDb, "params mirror output trim");
+    TDM_CHECK(p.inputTrimDb == 0.0f && p.gateThresholdDb == -55.0f && p.gateReleaseMs == 50.0f,
+              "reset literals: trim/gate");
+    TDM_CHECK(p.tight == 0.5f && p.drive == 0.3f && p.bite == 0.5f, "reset literals: drive");
+    TDM_CHECK(p.outputTrimDb == 0.0f, "reset literals: output trim");
+  }
+  // Reset-to-defaults flows through the normal handoff and takes audible
+  // effect: +12 dB trim (~4x) returns to exact unity, and audition-style
+  // drive settings return to the canonical defaults in the snapshot.
+  {
+    tdm::TechDeathRig rig;
+    rig.reset(48000.0, 512);
+    rig.setInputTrimDb(12.0f);
+    std::vector<float> in(512, 0.25f), out(512, 0.0f);
+    runBlocks(rig, in, out, 200);
+    // 1e-2: settled one-pole gain stalls ~5e-3 off target in float at 4x
+    // (documented non-issue); this only proves the hot value took effect.
+    TDM_CHECK_CLOSE(out[511], 1.0f, 1e-2f, "hot trim settles first");
+    rig.setInputTrimDb(tdm::InputTrim::kDefaultTrimDb);
+    runBlocks(rig, in, out, 200);
+    TDM_CHECK_CLOSE(out[511], 0.25f, 1e-3f, "trim reset to default restores unity");
+    rig.setDriveEnabled(true);
+    rig.setTight(0.85f); // audition values, NOT defaults
+    rig.setDrive(0.50f);
+    rig.setBite(0.70f);
+    tdm::RigParams hot = rig.params();
+    TDM_CHECK(hot.tight == 0.85f && hot.drive == 0.50f && hot.bite == 0.70f, "audition values stored");
+    rig.setTight(tdm::TightDrive::kDefaultTight);
+    rig.setDrive(tdm::TightDrive::kDefaultDrive);
+    rig.setBite(tdm::TightDrive::kDefaultBite);
+    const tdm::RigParams back = rig.params();
+    TDM_CHECK(back.tight == 0.5f && back.drive == 0.3f && back.bite == 0.5f, "drive reset to defaults");
+  }
 }

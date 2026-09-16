@@ -38,6 +38,10 @@ Headless checks (no GUI, no audio hardware):
 - TightDrive enable + Tight / Drive / Bite (0..1, start 0.85 / 0.50 / 0.70)
 - Output Trim (-24..+24 dB, starts 0)
 - Loaded NAM/IR basenames and live parameter values (10 Hz refresh)
+- Double-click any slider to reset it to its canonical DSP default: Input
+  0 dB, Gate −55 dB / 50 ms, Tight 0.50, Drive 0.30, Bite 0.50, Output
+  0 dB. The audition starting points (e.g. TightDrive 0.85 / 0.50 / 0.70)
+  are intentionally NOT the reset values.
 
 ## Threading rules (v0)
 

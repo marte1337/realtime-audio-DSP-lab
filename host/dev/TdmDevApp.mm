@@ -28,6 +28,10 @@
 #include "dsp/RigParams.h"
 #include "host/TdmEngine.h"
 
+// Double-click probe, defined after the control classes below (ObjC needs
+// global scope). External linkage so the in-namespace smoke-test can call it.
+bool probeDoubleClickReset(std::string& detail);
+
 namespace
 {
 // Audition starting point. Lives HERE (app layer), not in dsp/: these are
@@ -69,6 +73,32 @@ enum SliderTag
   kTagOutTrim
 };
 
+// Canonical double-click reset value per slider, sourced from the DSP
+// stage defaults (NOT the audition starting points below). The slider
+// subclass uses this; the smoke-test asserts it, so the mapping in the
+// repo's test run.
+double resetValueForTag(SliderTag tag)
+{
+  switch (tag)
+  {
+  case kTagInputTrim:
+    return tdm::InputTrim::kDefaultTrimDb;
+  case kTagGateThresh:
+    return tdm::TechDeathGate::kDefaultThresholdDb;
+  case kTagGateRel:
+    return tdm::TechDeathGate::kDefaultReleaseMs;
+  case kTagTight:
+    return tdm::TightDrive::kDefaultTight;
+  case kTagDrive:
+    return tdm::TightDrive::kDefaultDrive;
+  case kTagBite:
+    return tdm::TightDrive::kDefaultBite;
+  case kTagOutTrim:
+    return tdm::OutputTrim::kDefaultTrimDb;
+  }
+  return 0.0;
+}
+
 // Headless self-check: no GUI, no audio hardware. Returns exit code.
 int smokeTest()
 {
@@ -87,6 +117,23 @@ int smokeTest()
     check(q.gateEnabled && q.driveEnabled && q.gateThresholdDb == -55.0f && q.gateReleaseMs == 52.0f
               && q.tight == 0.85f && q.drive == 0.50f && q.bite == 0.70f,
           "audition defaults round-trip");
+    // Double-click reset mapping: canonical DSP defaults, NOT audition values
+    // (float compare: resetValueForTag widens the exact stage constants).
+    check((float)resetValueForTag(kTagInputTrim) == 0.0f, "reset: input trim -> 0 dB");
+    check((float)resetValueForTag(kTagGateThresh) == -55.0f, "reset: gate thresh -> -55 dB");
+    check((float)resetValueForTag(kTagGateRel) == 50.0f, "reset: gate release -> 50 ms");
+    check((float)resetValueForTag(kTagTight) == 0.5f, "reset: tight -> 0.50");
+    check((float)resetValueForTag(kTagDrive) == 0.3f, "reset: drive -> 0.30");
+    check((float)resetValueForTag(kTagBite) == 0.5f, "reset: bite -> 0.50");
+    check((float)resetValueForTag(kTagOutTrim) == 0.0f, "reset: output trim -> 0 dB");
+    // Double-click behavior on the real control (defined after the control
+    // classes below): a synthesized double-click parks the reset value and
+    // fires the normal action exactly once.
+    {
+      std::string detail;
+      check(probeDoubleClickReset(detail),
+            ("double-click resets slider and fires action" + detail).c_str());
+    }
   }
   // 2. Offline audio through the rig with audition params stays finite.
   {
@@ -152,6 +199,78 @@ int smokeTest()
   return failures == 0 ? 0 : 1;
 }
 } // namespace
+
+// Slider with double-click reset to its canonical DSP default. The reset
+// goes through the normal control action (paramChanged: -> rig setter ->
+// label refresh), i.e. the same realtime-safe handoff as dragging. Note
+// the first click of the double-click may briefly park the knob at the
+// click point; the reset action immediately follows through the usual
+// smoothed handoff, so the transient is inaudible.
+@interface TdmResetSlider : NSSlider
+@property(nonatomic) double resetValue;
+@end
+
+@implementation TdmResetSlider
+- (void)mouseDown:(NSEvent*)event
+{
+  if (event.clickCount >= 2)
+  {
+    self.doubleValue = self.resetValue;
+    [self sendAction:self.action to:self.target];
+  }
+  else
+  {
+    [super mouseDown:event];
+  }
+}
+@end
+
+// Minimal action target for the headless double-click check in smokeTest.
+@interface TdmSmokeTarget : NSObject
+@property(nonatomic) int actions;
+@property(nonatomic) double lastValue;
+- (void)sliderMoved:(NSSlider*)sender;
+@end
+
+@implementation TdmSmokeTarget
+- (void)sliderMoved:(NSSlider*)sender
+{
+  self.actions++;
+  self.lastValue = sender.doubleValue;
+}
+@end
+
+// Headless probe of the real double-click override: a synthesized
+// clickCount:2 event must park the reset value and fire the normal action
+// exactly once (the same path dragging uses).
+bool probeDoubleClickReset(std::string& detail)
+{
+  TdmSmokeTarget* target = [[TdmSmokeTarget alloc] init];
+  TdmResetSlider* slider = [[TdmResetSlider alloc] initWithFrame:NSMakeRect(0, 0, 300, 22)];
+  slider.minValue = (double)tdm::TechDeathGate::kMinThresholdDb;
+  slider.maxValue = (double)tdm::TechDeathGate::kMaxThresholdDb;
+  slider.doubleValue = -40.0;
+  slider.resetValue = resetValueForTag(kTagGateThresh);
+  slider.target = target;
+  slider.action = @selector(sliderMoved:);
+  NSEvent* dbl = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                    location:NSMakePoint(150, 11)
+                               modifierFlags:0
+                                   timestamp:0
+                                windowNumber:0
+                                     context:nil
+                                 eventNumber:0
+                                  clickCount:2
+                                    pressure:1.0];
+  [slider mouseDown:dbl];
+  if (target.actions == 1 && slider.doubleValue == -55.0 && target.lastValue == -55.0)
+    return true;
+  char buf[160];
+  std::snprintf(buf, sizeof(buf), " [actions=%d value=%.3f last=%.3f]", target.actions, slider.doubleValue,
+                target.lastValue);
+  detail = buf;
+  return false;
+}
 
 @interface DevController : NSObject <NSApplicationDelegate>
 - (instancetype)initWithEngine:(TdmEngine*)engine;
@@ -223,15 +342,17 @@ int smokeTest()
                  min:(double)mn
                  max:(double)mx
                 init:(double)init
+               reset:(double)reset
                    y:(CGFloat)y
                width:(CGFloat)width
 {
   NSTextField* nameLabel = [self makeLabel:name frame:NSMakeRect(20, y, 110, 22) small:NO];
   [_window.contentView addSubview:nameLabel];
-  NSSlider* slider = [[NSSlider alloc] initWithFrame:NSMakeRect(135, y, width - 135 - 90, 22)];
+  TdmResetSlider* slider = [[TdmResetSlider alloc] initWithFrame:NSMakeRect(135, y, width - 135 - 90, 22)];
   slider.minValue = mn;
   slider.maxValue = mx;
   slider.doubleValue = init;
+  slider.resetValue = reset;
   slider.continuous = YES;
   slider.target = self;
   slider.action = @selector(paramChanged:);
@@ -308,17 +429,39 @@ int smokeTest()
   [_window.contentView addSubview:sep];
   y -= 30;
 
-  // Trim + gate section.
-  [self addSliderRow:@"Input Trim" tag:kTagInputTrim min:-12 max:18 init:0 y:y width:kWidth];
+  // Trim + gate section. init: audition starting point (NOT the reset
+  // default); min/max/reset come from the DSP stage constants.
+  [self addSliderRow:@"Input Trim"
+                 tag:kTagInputTrim
+                 min:tdm::InputTrim::kMinTrimDb
+                 max:tdm::InputTrim::kMaxTrimDb
+                init:0
+               reset:tdm::InputTrim::kDefaultTrimDb
+                   y:y
+               width:kWidth];
   y -= 30;
   _gateCheck = [NSButton checkboxWithTitle:@"Gate enable" target:self action:@selector(gateToggled:)];
   _gateCheck.frame = NSMakeRect(20, y, 160, 22);
   _gateCheck.state = NSControlStateValueOn; // audition default
   [_window.contentView addSubview:_gateCheck];
   y -= 30;
-  [self addSliderRow:@"Gate Thresh" tag:kTagGateThresh min:-80 max:-35 init:-55 y:y width:kWidth];
+  [self addSliderRow:@"Gate Thresh"
+                 tag:kTagGateThresh
+                 min:tdm::TechDeathGate::kMinThresholdDb
+                 max:tdm::TechDeathGate::kMaxThresholdDb
+                init:-55
+               reset:tdm::TechDeathGate::kDefaultThresholdDb
+                   y:y
+               width:kWidth];
   y -= 30;
-  [self addSliderRow:@"Gate Release" tag:kTagGateRel min:10 max:500 init:52 y:y width:kWidth];
+  [self addSliderRow:@"Gate Release"
+                 tag:kTagGateRel
+                 min:tdm::TechDeathGate::kMinReleaseMs
+                 max:tdm::TechDeathGate::kMaxReleaseMs
+                init:52
+               reset:tdm::TechDeathGate::kDefaultReleaseMs
+                   y:y
+               width:kWidth];
   y -= 40;
 
   // Drive section.
@@ -327,15 +470,43 @@ int smokeTest()
   _driveCheck.state = NSControlStateValueOn; // audition default
   [_window.contentView addSubview:_driveCheck];
   y -= 30;
-  [self addSliderRow:@"Tight" tag:kTagTight min:0 max:1 init:0.85 y:y width:kWidth];
+  [self addSliderRow:@"Tight"
+                 tag:kTagTight
+                 min:tdm::TightDrive::kMinTight
+                 max:tdm::TightDrive::kMaxTight
+                init:0.85
+               reset:tdm::TightDrive::kDefaultTight
+                   y:y
+               width:kWidth];
   y -= 30;
-  [self addSliderRow:@"Drive" tag:kTagDrive min:0 max:1 init:0.50 y:y width:kWidth];
+  [self addSliderRow:@"Drive"
+                 tag:kTagDrive
+                 min:tdm::TightDrive::kMinDrive
+                 max:tdm::TightDrive::kMaxDrive
+                init:0.50
+               reset:tdm::TightDrive::kDefaultDrive
+                   y:y
+               width:kWidth];
   y -= 30;
-  [self addSliderRow:@"Bite" tag:kTagBite min:0 max:1 init:0.70 y:y width:kWidth];
+  [self addSliderRow:@"Bite"
+                 tag:kTagBite
+                 min:tdm::TightDrive::kMinBite
+                 max:tdm::TightDrive::kMaxBite
+                init:0.70
+               reset:tdm::TightDrive::kDefaultBite
+                   y:y
+               width:kWidth];
   y -= 40;
 
   // Output section.
-  [self addSliderRow:@"Output Trim" tag:kTagOutTrim min:-24 max:24 init:0 y:y width:kWidth];
+  [self addSliderRow:@"Output Trim"
+                 tag:kTagOutTrim
+                 min:tdm::OutputTrim::kMinTrimDb
+                 max:tdm::OutputTrim::kMaxTrimDb
+                init:0
+               reset:tdm::OutputTrim::kDefaultTrimDb
+                   y:y
+               width:kWidth];
   y -= 34;
   NSTextField* foot = [self makeLabel:@"Dev build: no presets, no ToneShape, no meters. Stops are silent, not pretty."
                                 frame:NSMakeRect(20, y, kWidth - 40, 22)
