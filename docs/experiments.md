@@ -87,7 +87,7 @@ attacks — with only Threshold + Release exposed.
 
 ### Implementation
 
-`dsp/TechDeathGate.h/.cpp`, inserted pre-NAM in `TechDeathRig`
+`dsp/Gate/TechDeathGate.h/.cpp`, inserted pre-NAM in `TechDeathRig`
 (Input → mono → Gate → NAM → IR → Output). Detector: peak follower,
 instant attack, 1 ms exponential release. Comparator: open above Threshold
 (-60..-20 dBFS peak, default -40), close below Threshold - 6 dB (fixed).
@@ -246,7 +246,7 @@ NAM in a useful way — without fizz, thinning, or oversampling complexity.
 
 ### Implementation
 
-`dsp/TightDrive.h/.cpp`, inserted post-gate in `TechDeathRig`
+`dsp/TightDrive/TightDrive.h/.cpp`, inserted post-gate in `TechDeathRig`
 (Input → Trim → Gate → Drive → NAM → IR → Output). Mono float, in-place
 safe, ~15 ops/sample, 3 filter states, RT-safe (no alloc/lock/IO).
 
@@ -457,7 +457,7 @@ fragment is clearly heard), not a second cliff.
 
 ### Implementation
 
-`dsp/TechDeathGate.h/.cpp` only. No new controls, no latency, no attack
+`dsp/Gate/TechDeathGate.h/.cpp` only. No new controls, no latency, no attack
 change, no Trim/Drive/NAM/IR touch. Two internal mechanisms:
 
 - Cascaded release: closing runs through a two-stage follower cascade
@@ -621,7 +621,7 @@ valley in beating was 20.7 ms.
 
 ### Implementation
 
-`dsp/TechDeathGate.h/.cpp` only. The boolean open flag plus 60 ms timer
+`dsp/Gate/TechDeathGate.h/.cpp` only. The boolean open flag plus 60 ms timer
 became an explicit CLOSED -> OPEN -> CLOSING -> CLOSED state machine:
 
 - CLOSED: normal Threshold opens with zero delay (no permanent penalty).

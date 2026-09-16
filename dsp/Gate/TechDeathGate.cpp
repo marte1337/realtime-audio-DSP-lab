@@ -1,4 +1,4 @@
-#include "dsp/TechDeathGate.h"
+#include "dsp/Gate/TechDeathGate.h"
 
 #include <cassert>
 #include <cmath>

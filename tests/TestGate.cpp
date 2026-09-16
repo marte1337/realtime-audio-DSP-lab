@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "dsp/TechDeathGate.h"
+#include "dsp/Gate/TechDeathGate.h"
 #include "dsp/TechDeathRig.h"
 
 namespace

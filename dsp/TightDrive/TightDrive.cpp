@@ -1,4 +1,4 @@
-#include "dsp/TightDrive.h"
+#include "dsp/TightDrive/TightDrive.h"
 
 #include <cassert>
 #include <cmath>

@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "dsp/TechDeathRig.h"
-#include "dsp/TightDrive.h"
+#include "dsp/TightDrive/TightDrive.h"
 
 namespace
 {

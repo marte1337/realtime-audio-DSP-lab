@@ -19,8 +19,8 @@
 #include "dsp/CabIrStage.h"
 #include "dsp/InputTrim.h"
 #include "dsp/NamStage.h"
-#include "dsp/TechDeathGate.h"
-#include "dsp/TightDrive.h"
+#include "dsp/Gate/TechDeathGate.h"
+#include "dsp/TightDrive/TightDrive.h"
 #include "dsp/OutputTrim.h"
 
 namespace tdm
