@@ -227,3 +227,104 @@ chosen trim and re-evaluate the closing crackle/fragments.
   primitive for any future gain-like parameter (output trim, mix blends),
   but per AGENTS.md it stays a per-module idiom until a third use case
   proves a shared helper worthwhile.
+
+---
+
+## Date
+
+2026-09-15
+
+### Module
+
+TightDrive (v1, pre-NAM conditioning / overdrive)
+
+### Hypothesis
+
+A tight pre-drive highpass into moderate tanh saturation with post
+presence shaping can firm up palm mutes, clarify pick attack, and push the
+NAM in a useful way — without fizz, thinning, or oversampling complexity.
+
+### Implementation
+
+`dsp/TightDrive.h/.cpp`, inserted post-gate in `TechDeathRig`
+(Input → Trim → Gate → Drive → NAM → IR → Output). Mono float, in-place
+safe, ~15 ops/sample, 3 filter states, RT-safe (no alloc/lock/IO).
+
+- Tight 0..1 (default 0.5): one-pole HPF, exponential map 40 Hz → 320 Hz.
+  40 Hz is transparent for 7-string low B; 320 Hz cuts low-E fundamental
+  ~12 dB (surgical). First-order: gentle, stable, no resonance.
+- Drive 0..1 (default 0.3): preGain 1..8 linear (0..+18 dB) into tanh.
+  C-infinity, odd-symmetric (no DC), bounded +/-1 (overdrive, never fuzz).
+- Bite 0..1 (default 0.5): post-shaper parallel high-shelf @ 3 kHz,
+  -5..+5 dB (0.5 = exactly 0 dB, neutral). Post placement keeps fizz out
+  of the clipper. Measured end-to-end sweep at 5 kHz: 1.998x (~6 dB);
+  220 Hz moves 0.6% (spectral control, not global gain).
+- Fixed one-pole lowpass @ 12 kHz after the shelf: anti-fizz/alias
+  insurance above the presence range, not a tone control.
+- Smoothing: applied preGain/HPF-coeff/shelf-mix each follow targets via
+  one-pole tau ~10 ms (rate-independent). Fixed-LPF coeff needs none.
+- Gain staging: NO output compensation (the push is the product). Level
+  rises with Drive by design; judge focus/drive in audition, not loudness.
+- reset(): validates rate, zeroes states, snaps smoothed values to
+  targets. Disabled (default) or unreset: bit-exact memcpy bypass.
+- Denormals: all three filter states snap to 0 below 1e-12 (gate pattern).
+
+### Audition setup
+
+- FIXED reference (do not change while evaluating TightDrive): Scarlett
+  48 kHz, same guitar/pickup, Input Trim +9 dB, Gate -40 dB / 50 ms, same
+  ENGL Powerball-style NAM, same Mesa Traditional V30 IR.
+- A (Subtle): `--tight-drive --tight 0.25 --drive 0.15 --bite 0.45`
+  (HPF ~67 Hz, pre +6.2 dB, shelf -0.5 dB). Expect: slightly firmer lows,
+  minimal saturation, natural feel.
+- B (Tight): `--tight-drive --tight 0.55 --drive 0.35 --bite 0.6`
+  (HPF ~121 Hz, pre +10.8 dB, shelf +1 dB). Expect: tighter palm mutes,
+  better pick definition and fast-note separation, no severe thinning.
+- C (Surgical): `--tight-drive --tight 0.85 --drive 0.5 --bite 0.7`
+  (HPF ~234 Hz, pre +13.1 dB, shelf +2 dB). Expect: extremely controlled
+  low end, hard attack; may be too extreme for general use.
+
+### Expected behavior
+
+What should change: low-end tightness, pick clarity, NAM saturation feel
+across A → B → C; palm-mute weight vs control tradeoff.
+
+What should remain unchanged: bypassed drive = previous rig bit-exactly
+(verified); gate/trim/NAM/IR algorithms untouched (suites green);
+noiseless switching (smoothed params); no DC, no denormal issues.
+
+### Listening result
+
+NOT YET AUDITIONED. Listen per preset for: palm-mute tightness vs weight,
+pick attack clarity without scratch/fizz, fast single-note separation,
+chord intelligibility, low-string mud vs thinness, NAM focus vs mere
+loudness, gate-interaction changes, and artifacts (fizz, metallic aliasing
+highs, clicks, unstable lows, over-compression, dynamics loss).
+
+### Problems
+
+None observed offline. Automated suite: 208 checks, 0 failures (75 new
+drive checks), incl. cutoff tracking at 44.1/48/96 kHz and a full-chain
+drive+NAM render. Known limitations: first-order HPF only (steeper slope
+later if listening demands); no lookahead; loudness rises with Drive
+(confound noted above); aliasing strategy is argue-not-oversample (below).
+
+Aliasing position: tanh is smooth, drive capped moderate, no HF
+pre-emphasis into the clipper, fixed 12 kHz post-LPF, Mesa IR lowpasses
+hard above ~5-6 kHz. If audition reports metallic highs: add oversampling
+or a lower post-LPF corner. Flagged for senior DSP review either way.
+
+### Next step
+
+Run A/B/C audition against the fixed reference chain; promote one preset
+toward defaults only from listening evidence. Candidates if listening
+demands: steeper Tight slope, dual-rate release-style saturation feel,
+sidechain-aware low-string handling.
+
+### Transferable learning
+
+- Parallel-form shelf (y = x + k*HP(x)) is unconditionally stable,
+  interpolation-safe, and neutral-bit-exact at k = 0: good default shape
+  for any future tone control (ToneShape).
+- Quadrature-correlation fundamental measurement is the right test tool
+  whenever a waveshaper sits in the measured path (peak/RMS lie).

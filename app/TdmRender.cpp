@@ -3,9 +3,12 @@
 // Usage:
 //   tdm_render --in di.wav --out processed.wav [--nam amp.nam] [--ir cab.wav]
 //              [--gate-thresh db] [--gate-rel ms] [--input-trim db]
+//              [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]
 //
 // Passing either gate flag enables TechDeathGate (the other keeps its
 // default); without gate flags the gate bypasses exactly (Milestone 0 path).
+// Passing --tight-drive or any of --tight/--drive/--bite enables TightDrive
+// (unspecified params keep their defaults); otherwise it bypasses exactly.
 //
 // Input is averaged to mono, run through the rig in 1024-frame blocks,
 // written back as mono float32 WAV at the input rate.
@@ -23,13 +26,16 @@ namespace
 void usage()
 {
   std::printf("usage: tdm_render --in di.wav --out processed.wav [--nam amp.nam] [--ir cab.wav] "
-              "[--gate-thresh db] [--gate-rel ms] [--input-trim db]\n");
+              "[--gate-thresh db] [--gate-rel ms] [--input-trim db]\n"
+              "       [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n");
 }
 } // namespace
 
 int main(int argc, char** argv)
 {
   std::string inPath, outPath, namPath, irPath, gateThresh, gateRel, inputTrim;
+  std::string tight, drive, bite;
+  bool driveEnable = false;
   for (int i = 1; i < argc; ++i)
   {
     const std::string a = argv[i];
@@ -56,6 +62,14 @@ int main(int argc, char** argv)
       need("--gate-rel", gateRel);
     else if (a == "--input-trim")
       need("--input-trim", inputTrim);
+    else if (a == "--tight-drive")
+      driveEnable = true;
+    else if (a == "--tight")
+      need("--tight", tight);
+    else if (a == "--drive")
+      need("--drive", drive);
+    else if (a == "--bite")
+      need("--bite", bite);
     else
     {
       usage();
@@ -84,6 +98,16 @@ int main(int argc, char** argv)
         rig.setGateReleaseMs(std::stof(gateRel));
       rig.setGateEnabled(true);
     }
+    if (driveEnable || !tight.empty() || !drive.empty() || !bite.empty())
+    {
+      if (!tight.empty())
+        rig.setTight(std::stof(tight));
+      if (!drive.empty())
+        rig.setDrive(std::stof(drive));
+      if (!bite.empty())
+        rig.setBite(std::stof(bite));
+      rig.setDriveEnabled(true);
+    }
     if (!namPath.empty())
       rig.loadNam(namPath);
     if (!irPath.empty())
@@ -106,9 +130,10 @@ int main(int argc, char** argv)
       if (std::fabs(v) > peak)
         peak = std::fabs(v);
     tdm::writeWavFloat32(outPath, const_cast<const float**>(outPtrs), 1, total, in.sampleRate);
-    std::printf("rendered %d frames @ %.0f Hz (nam=%s ir=%s gate=%s trim=%.1f) peak=%.4f -> %s\n", total,
-                in.sampleRate, namPath.empty() ? "-" : namPath.c_str(), irPath.empty() ? "-" : irPath.c_str(),
-                rig.isGateEnabled() ? "on" : "off", rig.inputTrimDb(), peak, outPath.c_str());
+    std::printf("rendered %d frames @ %.0f Hz (nam=%s ir=%s gate=%s trim=%.1f drive=%s) peak=%.4f -> %s\n",
+                total, in.sampleRate, namPath.empty() ? "-" : namPath.c_str(),
+                irPath.empty() ? "-" : irPath.c_str(), rig.isGateEnabled() ? "on" : "off", rig.inputTrimDb(),
+                rig.isDriveEnabled() ? "on" : "off", peak, outPath.c_str());
     return 0;
   }
   catch (const std::exception& e)

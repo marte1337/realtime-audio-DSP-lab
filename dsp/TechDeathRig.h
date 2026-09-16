@@ -1,6 +1,7 @@
 #pragma once
 
-// Rig: Input -> Input Trim -> TechDeathGate -> NAM A2 -> Cabinet IR -> Output.
+// Rig: Input -> Input Trim -> TechDeathGate -> TightDrive -> NAM A2
+//   -> Cabinet IR -> Output.
 //
 // Mono internal path. Multi-channel input is averaged to mono (documented
 // choice: avoids the +6 dB surprise of summing; stereo width tricks come
@@ -8,6 +9,7 @@
 // Stages without a loaded asset bypass transparently; the gate bypasses
 // exactly until explicitly enabled, preserving Milestone 0 behavior.
 // Input Trim defaults to 0 dB, at which it passes input bit-exactly.
+// TightDrive is disabled by default and bypasses exactly when off.
 
 #include <string>
 #include <vector>
@@ -16,13 +18,14 @@
 #include "dsp/InputTrim.h"
 #include "dsp/NamStage.h"
 #include "dsp/TechDeathGate.h"
+#include "dsp/TightDrive.h"
 
 namespace tdm
 {
 class TechDeathRig
 {
 public:
-  // Off-RT: sizes scratch, resets both stages.
+  // Off-RT: sizes scratch, resets all stages.
   void reset(double sampleRate, int maxBlockSize);
 
   // Off-RT loaders; require reset() first so the host rate is known.
@@ -48,6 +51,14 @@ public:
   void setInputTrimDb(float db) { trim_.setTrimDb(db); }
   float inputTrimDb() const { return trim_.trimDb(); }
 
+  // TightDrive controls (off-RT setters). Disabled by default: bypass
+  // preserves the previous rig behavior exactly until explicitly enabled.
+  void setDriveEnabled(bool enabled) { drive_.setEnabled(enabled); }
+  void setTight(float v) { drive_.setTight(v); }
+  void setDrive(float v) { drive_.setDrive(v); }
+  void setBite(float v) { drive_.setBite(v); }
+  bool isDriveEnabled() const { return drive_.isEnabled(); }
+
   // RT-safe after reset(). inputs[nIn][nFrames] -> outputs[nOut][nOut].
   void processBlock(const float* const* inputs, int numInputChannels, float* const* outputs,
                     int numOutputChannels, int numFrames);
@@ -55,6 +66,7 @@ public:
 private:
   InputTrim trim_;
   TechDeathGate gate_;
+  TightDrive drive_;
   NamStage nam_;
   CabIrStage ir_;
   std::vector<float> mono_; // internal scratch, sized maxBlock_
