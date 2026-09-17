@@ -11,6 +11,8 @@
 //              [--input-trim db]
 //              [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]
 //              [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]
+//              [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]
+//              [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]
 //              [--output-trim db]
 //   tdm_live --list            (show audio devices and exit)
 //
@@ -21,6 +23,10 @@
 // Passing --tone-shape or any of --weight/--contour/--presence enables
 // ToneShape (unspecified params keep their defaults); otherwise it bypasses
 // exactly.
+// Passing --delay or any of --delay-time/--delay-fb/--delay-mix enables
+// Delay; passing --reverb or any of --reverb-decay/--reverb-mix enables
+// Reverb (unspecified params keep their defaults); otherwise each unit
+// bypasses exactly.
 //
 // Audio behavior lives in host/TdmEngine (shared with the developer app);
 // this file is only flag parsing plus the run loop.
@@ -35,7 +41,8 @@ int main(int argc, char** argv)
 {
   std::string namPath, irPath, gateThresh, gateRel, inputTrim;
   std::string tight, drive, bite, weight, contour, presence, outputTrim;
-  bool driveEnable = false, shapeEnable = false;
+  std::string delayTime, delayFb, delayMix, reverbDecay, reverbMix;
+  bool driveEnable = false, shapeEnable = false, delayEnable = false, reverbEnable = false;
   for (int i = 1; i < argc; ++i)
   {
     const std::string a = argv[i];
@@ -60,9 +67,20 @@ int main(int argc, char** argv)
       shapeEnable = true;
       continue;
     }
+    if (a == "--delay")
+    {
+      delayEnable = true;
+      continue;
+    }
+    if (a == "--reverb")
+    {
+      reverbEnable = true;
+      continue;
+    }
     if ((a == "--nam" || a == "--ir" || a == "--gate-thresh" || a == "--gate-rel" || a == "--input-trim"
          || a == "--tight" || a == "--drive" || a == "--bite" || a == "--weight" || a == "--contour"
-         || a == "--presence" || a == "--output-trim")
+         || a == "--presence" || a == "--delay-time" || a == "--delay-fb" || a == "--delay-mix"
+         || a == "--reverb-decay" || a == "--reverb-mix" || a == "--output-trim")
         && i + 1 < argc)
     {
       if (a == "--nam")
@@ -87,6 +105,16 @@ int main(int argc, char** argv)
         contour = argv[++i];
       else if (a == "--presence")
         presence = argv[++i];
+      else if (a == "--delay-time")
+        delayTime = argv[++i];
+      else if (a == "--delay-fb")
+        delayFb = argv[++i];
+      else if (a == "--delay-mix")
+        delayMix = argv[++i];
+      else if (a == "--reverb-decay")
+        reverbDecay = argv[++i];
+      else if (a == "--reverb-mix")
+        reverbMix = argv[++i];
       else
         outputTrim = argv[++i];
       continue;
@@ -94,6 +122,8 @@ int main(int argc, char** argv)
     std::printf("usage: tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms] "
                 "[--input-trim db] [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n"
                 "       [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]\n"
+                "       [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]\n"
+                "       [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]\n"
                 "       [--output-trim db] | --list\n");
     return 2;
   }
@@ -132,6 +162,24 @@ int main(int argc, char** argv)
         params.presence = std::stof(presence);
       params.shapeEnabled = true;
     }
+    if (delayEnable || !delayTime.empty() || !delayFb.empty() || !delayMix.empty())
+    {
+      if (!delayTime.empty())
+        params.delayTimeMs = std::stof(delayTime);
+      if (!delayFb.empty())
+        params.delayFeedback = std::stof(delayFb);
+      if (!delayMix.empty())
+        params.delayMix = std::stof(delayMix);
+      params.delayEnabled = true;
+    }
+    if (reverbEnable || !reverbDecay.empty() || !reverbMix.empty())
+    {
+      if (!reverbDecay.empty())
+        params.reverbDecay = std::stof(reverbDecay);
+      if (!reverbMix.empty())
+        params.reverbMix = std::stof(reverbMix);
+      params.reverbEnabled = true;
+    }
     if (!outputTrim.empty())
       params.outputTrimDb = std::stof(outputTrim);
     engine.rig().setParams(params);
@@ -154,10 +202,11 @@ int main(int argc, char** argv)
     }
 
     const tdm::RigParams applied = engine.rig().params();
-    std::printf("live: %.0fHz nam=%s ir=%s gate=%s trim=%.1f drive=%s shape=%s out trim=%.1f\n",
+    std::printf("live: %.0fHz nam=%s ir=%s gate=%s trim=%.1f drive=%s shape=%s delay=%s reverb=%s out trim=%.1f\n",
                 engine.sampleRate(), engine.rig().hasNam() ? "yes" : "no",
                 engine.rig().hasIr() ? "yes" : "no", applied.gateEnabled ? "on" : "off", applied.inputTrimDb,
                 applied.driveEnabled ? "on" : "off", applied.shapeEnabled ? "on" : "off",
+                applied.delayEnabled ? "on" : "off", applied.reverbEnabled ? "on" : "off",
                 applied.outputTrimDb);
     std::printf("press q + Enter to quit\n");
     char line[64] = {};

@@ -14,11 +14,15 @@ void TechDeathRig::reset(double sampleRate, int maxBlockSize)
   sampleRate_ = sampleRate;
   maxBlock_ = maxBlockSize;
   mono_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
+  left_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
+  right_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
   trim_.reset(sampleRate);
   gate_.reset(sampleRate);
   drive_.reset(sampleRate);
   shape_.reset(sampleRate);
-  outTrim_.reset(sampleRate);
+  space_.reset(sampleRate);
+  outTrimL_.reset(sampleRate);
+  outTrimR_.reset(sampleRate);
   nam_.reset(sampleRate, maxBlockSize);
   ir_.reset(sampleRate);
   // Stages keep their own stored values across reset, but push unconditionally
@@ -55,6 +59,13 @@ RigParams TechDeathRig::params() const
   p.weight = weight();
   p.contour = contour();
   p.presence = presence();
+  p.delayEnabled = isDelayEnabled();
+  p.delayTimeMs = delayTimeMs();
+  p.delayFeedback = delayFeedback();
+  p.delayMix = delayMix();
+  p.reverbEnabled = isReverbEnabled();
+  p.reverbDecay = reverbDecay();
+  p.reverbMix = reverbMix();
   p.outputTrimDb = outputTrimDb();
   return p;
 }
@@ -73,6 +84,13 @@ void TechDeathRig::setParams(const RigParams& p)
   setWeight(p.weight);
   setContour(p.contour);
   setPresence(p.presence);
+  setDelayEnabled(p.delayEnabled);
+  setDelayTimeMs(p.delayTimeMs);
+  setDelayFeedback(p.delayFeedback);
+  setDelayMix(p.delayMix);
+  setReverbEnabled(p.reverbEnabled);
+  setReverbDecay(p.reverbDecay);
+  setReverbMix(p.reverbMix);
   setOutputTrimDb(p.outputTrimDb);
 }
 
@@ -150,10 +168,53 @@ void TechDeathRig::syncParamsToStages()
     shape_.setPresence(presence);
     appliedPresence_ = presence;
   }
+  const bool delayEn = delayEnabled_.load(std::memory_order_relaxed);
+  if (delayEn != appliedDelayEnabled_)
+  {
+    space_.setDelayEnabled(delayEn);
+    appliedDelayEnabled_ = delayEn;
+  }
+  const float delayMs = delayTimeMs_.load(std::memory_order_relaxed);
+  if (delayMs != appliedDelayTimeMs_)
+  {
+    space_.setDelayTimeMs(delayMs);
+    appliedDelayTimeMs_ = delayMs;
+  }
+  const float delayFb = delayFb_.load(std::memory_order_relaxed);
+  if (delayFb != appliedDelayFb_)
+  {
+    space_.setDelayFeedback(delayFb);
+    appliedDelayFb_ = delayFb;
+  }
+  const float delayMix = delayMix_.load(std::memory_order_relaxed);
+  if (delayMix != appliedDelayMix_)
+  {
+    space_.setDelayMix(delayMix);
+    appliedDelayMix_ = delayMix;
+  }
+  const bool reverbEn = reverbEnabled_.load(std::memory_order_relaxed);
+  if (reverbEn != appliedReverbEnabled_)
+  {
+    space_.setReverbEnabled(reverbEn);
+    appliedReverbEnabled_ = reverbEn;
+  }
+  const float reverbDecay = reverbDecay_.load(std::memory_order_relaxed);
+  if (reverbDecay != appliedReverbDecay_)
+  {
+    space_.setReverbDecay(reverbDecay);
+    appliedReverbDecay_ = reverbDecay;
+  }
+  const float reverbMix = reverbMix_.load(std::memory_order_relaxed);
+  if (reverbMix != appliedReverbMix_)
+  {
+    space_.setReverbMix(reverbMix);
+    appliedReverbMix_ = reverbMix;
+  }
   const float outTrim = outTrimDb_.load(std::memory_order_relaxed);
   if (outTrim != appliedOutTrimDb_)
   {
-    outTrim_.setTrimDb(outTrim);
+    outTrimL_.setTrimDb(outTrim);
+    outTrimR_.setTrimDb(outTrim);
     appliedOutTrimDb_ = outTrim;
   }
 }
@@ -172,7 +233,15 @@ void TechDeathRig::pushAllParamsToStages()
   shape_.setWeight(weight_.load(std::memory_order_relaxed));
   shape_.setContour(contour_.load(std::memory_order_relaxed));
   shape_.setPresence(presence_.load(std::memory_order_relaxed));
-  outTrim_.setTrimDb(outTrimDb_.load(std::memory_order_relaxed));
+  space_.setDelayEnabled(delayEnabled_.load(std::memory_order_relaxed));
+  space_.setDelayTimeMs(delayTimeMs_.load(std::memory_order_relaxed));
+  space_.setDelayFeedback(delayFb_.load(std::memory_order_relaxed));
+  space_.setDelayMix(delayMix_.load(std::memory_order_relaxed));
+  space_.setReverbEnabled(reverbEnabled_.load(std::memory_order_relaxed));
+  space_.setReverbDecay(reverbDecay_.load(std::memory_order_relaxed));
+  space_.setReverbMix(reverbMix_.load(std::memory_order_relaxed));
+  outTrimL_.setTrimDb(outTrimDb_.load(std::memory_order_relaxed));
+  outTrimR_.setTrimDb(outTrimDb_.load(std::memory_order_relaxed));
   appliedInTrimDb_ = inTrimDb_.load(std::memory_order_relaxed);
   appliedGateEnabled_ = gateEnabled_.load(std::memory_order_relaxed);
   appliedGateThreshDb_ = gateThreshDb_.load(std::memory_order_relaxed);
@@ -185,6 +254,13 @@ void TechDeathRig::pushAllParamsToStages()
   appliedWeight_ = weight_.load(std::memory_order_relaxed);
   appliedContour_ = contour_.load(std::memory_order_relaxed);
   appliedPresence_ = presence_.load(std::memory_order_relaxed);
+  appliedDelayEnabled_ = delayEnabled_.load(std::memory_order_relaxed);
+  appliedDelayTimeMs_ = delayTimeMs_.load(std::memory_order_relaxed);
+  appliedDelayFb_ = delayFb_.load(std::memory_order_relaxed);
+  appliedDelayMix_ = delayMix_.load(std::memory_order_relaxed);
+  appliedReverbEnabled_ = reverbEnabled_.load(std::memory_order_relaxed);
+  appliedReverbDecay_ = reverbDecay_.load(std::memory_order_relaxed);
+  appliedReverbMix_ = reverbMix_.load(std::memory_order_relaxed);
   appliedOutTrimDb_ = outTrimDb_.load(std::memory_order_relaxed);
 }
 
@@ -218,10 +294,28 @@ void TechDeathRig::processBlock(const float* const* inputs, int numInputChannels
     nam_.processBlock(mono_.data(), mono_.data(), m);
     ir_.processBlock(mono_.data(), mono_.data(), m);
     shape_.processBlock(mono_.data(), mono_.data(), m);
-    outTrim_.processBlock(mono_.data(), mono_.data(), m);
-    for (int c = 0; c < numOutputChannels; ++c)
+    // Space is the first stereo stage: mono in, L/R out. Both trim
+    // instances see identical target histories, so their gains agree
+    // sample-exactly and the dry path matches the old single instance.
+    space_.processBlock(mono_.data(), left_.data(), right_.data(), m);
+    outTrimL_.processBlock(left_.data(), left_.data(), m);
+    outTrimR_.processBlock(right_.data(), right_.data(), m);
+    if (numOutputChannels == 1)
+    {
+      // Exact mono fold-down: (x + x) * 0.5f is bit-exact for the dry
+      // (bypassed) case, standard fold for wet.
       for (int i = 0; i < m; ++i)
-        outputs[c][offset + i] = mono_[static_cast<size_t>(i)];
+        outputs[0][offset + i] = (left_[static_cast<size_t>(i)] + right_[static_cast<size_t>(i)]) * 0.5f;
+    }
+    else
+    {
+      for (int c = 0; c < numOutputChannels; ++c)
+      {
+        const float* src = (c % 2 == 0) ? left_.data() : right_.data();
+        for (int i = 0; i < m; ++i)
+          outputs[c][offset + i] = src[static_cast<size_t>(i)];
+      }
+    }
     offset += m;
     remaining -= m;
   }

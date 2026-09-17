@@ -16,6 +16,9 @@
 #include "dsp/OutputTrim.h"
 #include "dsp/TightDrive/TightDrive.h"
 #include "dsp/ToneShape/ToneShape.h"
+#include "dsp/Space/Delay.h"
+#include "dsp/Space/Reverb.h"
+#include "dsp/Space/SpaceProcessor.h"
 
 namespace tdm
 {
@@ -33,6 +36,13 @@ struct RigParams
   float weight = ToneShape::kDefaultWeight;
   float contour = ToneShape::kDefaultContour;
   float presence = ToneShape::kDefaultPresence;
+  bool delayEnabled = false;
+  float delayTimeMs = Delay::kDefaultTimeMs;
+  float delayFeedback = Delay::kDefaultFeedback;
+  float delayMix = SpaceProcessor::kDefaultDelayMix;
+  bool reverbEnabled = false;
+  float reverbDecay = Reverb::kDefaultDecay;
+  float reverbMix = SpaceProcessor::kDefaultReverbMix;
   float outputTrimDb = OutputTrim::kDefaultTrimDb;
 };
 } // namespace tdm

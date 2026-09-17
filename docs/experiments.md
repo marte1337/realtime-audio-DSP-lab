@@ -72,6 +72,148 @@ Add new experiments below this line.
 
 ## Date
 
+2026-09-16
+
+### Module
+
+Space v1 (Delay + Reverb, `dsp/Space/`; first stereo stage in `TechDeathRig`)
+
+### Hypothesis
+
+A small post-cab time/space stage can give leads and ambience room to
+breathe while the dry brutal rhythm tone stays mathematically untouched:
+series routing (room hears the echoes), additive mixes (dry never scaled),
+true ping-pong delay plus a damped Schroeder-Moorer room — with only
+Time/Feedback/Mix + Decay/Mix exposed.
+
+### Implementation
+
+`dsp/Space/Delay.h/.cpp` — two cross-coupled lines, dry enters the L line
+only, each line recirculates the OTHER line's damped tap: echoes strictly
+alternate L/R/L (true ping-pong) with one Time control. Fractional taps
+(linear interp); Time glides like a tape knob (~30 ms smoothing);
+feedback (0..0.85, default 0.35) and a fixed ~4.5 kHz loop-damping
+lowpass live inside the loop, so repeats darken and loop gain stays < 1
+by construction. Ranges: Time 20..2000 ms (default 375), wet-only out.
+
+`dsp/Space/Reverb.h/.cpp` — stereo Schroeder-Moorer: 4 parallel damped
+combs (T60 0.25..5 s exponential from Decay 0..1, default 0.4; per-rate
+retuned comb gains for the same T60) into 2 decorrelated series
+allpasses per channel. Fixed 180 Hz send highpass (mud never enters the
+tank), fixed ~5.5 kHz comb damping (highs die faster than the T60 lows
+by design). Wet-only out.
+
+`dsp/Space/SpaceProcessor.h/.cpp` — mono in, stereo out. Send for the
+room is dry + audible delay (series); output is dry + delayMix*delayWet
++ reverbMix*reverbWet (additive, mixes smoothed ~10 ms). Everything
+through ToneShape stays mono; Space is the first stereo stage.
+`TechDeathRig` carries L/R from Space through Output Trim; N=1 output is
+the exact (L+R)/2 fold-down, extra channels cycle the pair. Disabled (or
+never reset) is bit-exact dry on L+R.
+
+Offline numbers: full suite 563 checks / 0 failures, including strict
+L/R alternation (opposite side exactly silent), fb=0 single echo on L,
+DC-step tail ratios == feedback, decay energy slopes agreeing across
+44.1/48/96 kHz, exact dry bypass, and rig integration (fold-down,
+cycling, trim-after-space). Render proof: first 400 samples of a
+space render are bit-identical to the dry render; the tail differs by
+> 6.0 peak (space clearly audible, onset untouched).
+
+### Audition setup
+
+- guitar / pickup / tuning: (fill in)
+- NAM model / IR / sample rate: (fill in)
+- dev app: Space section, both units OFF at audition default (dry first)
+- CLI: `tdm_render --delay --delay-time 375 --delay-fb 0.4 --delay-mix 0.3
+  --reverb --reverb-decay 0.5 --reverb-mix 0.25 ...` (same flags on `tdm_live`)
+- reference takes: same riff dry (no space flags) for A/B
+
+First-audition starting takes (exact settings — set by ear from here):
+
+1. subtle rhythm ambience: Delay OFF; Reverb ON, Decay 0.15 (~0.5 s),
+   Mix 0.10. Room glue only; mutes must still feel instant.
+2. technical lead: Delay ON, Time 375 ms, Feedback 0.35, Mix 0.22;
+   Reverb ON, Decay 0.40 (~1.5 s), Mix 0.18. Echoes sit under fast runs
+   without smearing 16th-note separation.
+3. large atmospheric lead: Delay ON, Time 500 ms, Feedback 0.50,
+   Mix 0.30; Reverb ON, Decay 0.75 (~3 s), Mix 0.28. Wash allowed, dry
+   attack must still lead every note.
+
+### Expected behavior
+
+What should change: leads gain depth/width; single-note lines feel
+supported; the ping-pong reads as left/right movement on headphones.
+
+What should remain unchanged: palm-mute tightness and pick attack (dry
+is never scaled — disabling either unit returns exact dry immediately);
+no low-end buildup (send HPF + darkening repeats); no harshness stacking
+on fast repeats (loop damping); stereo image collapses to mono cleanly
+(exact fold-down, decorrelated but energy-matched L/R).
+
+Bug tells: any audible difference between dry and mix-0 (not bit-exact
+= bug); echoes that do NOT alternate sides (ping-pong broken);
+metallic ringing / fixed pitch in the tail (comb gains wrong);
+mushy attacks with Reverb on (send HPF too high or mix too hot —
+setting issue, not DSP, unless Mix 0.1 already smears).
+
+### Listening result
+
+NOT YET AUDITIONED with a real guitar. Offline behavior is fully
+pinned by tests, but passing tests never replace listening validation:
+play rapid technical rhythm AND legato leads through the three takes
+above before calling v1 finished.
+
+### Problems
+
+One real DSP bug found by the tests during development and fixed: both
+delay lines were fed the dry input, so L/R wet were bit-identical
+(dual-mono wearing a "ping-pong" label — symmetric cross-coupling can
+never alternate). Fix: dry enters the L line only; R recirculates L's
+damped tap. One-line change, now pinned by strict alternation tests
+(third echo included). Also fixed: Space mix getters returned the
+smoothed gain instead of the target (siblings return targets); two test
+oracles that misread the design (peak-based reverb assertions vs damped
+HF, absolute-energy rate comparison vs per-rate echo density) were
+reworked to energy/slope oracles — no DSP change.
+
+### Next step
+
+Real-guitar audition of the three takes above; adjust defaults/mixes
+only from listening evidence. Candidates if listening demands: delay
+low-cut / high-cut exposure, reverb pre-delay, ducking hooks for rhythm
+clarity (all deliberately out of v1 scope).
+
+### Transferable learning
+
+- Additive wet + never-scale-dry is a 4-for-4 proven house pattern now
+  (Bite, ToneShape sections, Space mixes): mix-0-bit-exact falls out
+  for free and makes A/B testing honest.
+- Series delay→reverb send at audible level (not unity-tap) is what
+  makes the room "hear the echoes" — worth reusing anywhere a room
+  follows a delay.
+- Per-rate T60 comb retuning works (slopes agree 44.1/48/96); test decay
+  with energy slopes, never peaks, when the design damps highs.
+- Symmetric cross-coupled feedback CANNOT ping-pong — the dry feed must
+  be asymmetric. Obvious in hindsight; the strict-alternation test is
+  what caught it.
+
+### Senior DSP review requested
+
+- Ping-pong fix (dry into L only): confirm no wanted topology was lost
+  (e.g. dual-mono first echo for mono-compatibility purists) — the
+  fold-down stays exact either way.
+- Comb/allpass tunings (prime-ish lengths, 0.7 allpass gain, 180 Hz send
+  HP, 5.5 kHz comb damping) against real tech-death lead targets —
+  chosen from standard practice, not from listening yet.
+- T60 mapping (Decay 0..1 → 0.25..5 s exponential) and wet gains at the
+  extremes — max Decay Mix 1.0 is a lot of 5 s wash; confirm useful.
+- Delay damping (fixed 4.5 kHz) vs exposing a tone control — v1 says no,
+  revisit if leads sound dull or harsh.
+
+---
+
+## Date
+
 2026-09-15
 
 ### Module
@@ -895,3 +1037,470 @@ compensation metadata (preset layer calls the same setters).
   howler.
 - Weight DC gain (+6 dB on NAM DC offset) and the standing no-DC-blocker
   stance for a post-IR linear stage.
+
+---
+
+## Date
+
+2026-09-17
+
+### Module
+
+Space v1.1 (pair-equalized ping-pong + 8-line FDN reverb; first
+real-guitar audition results for v1 + redesign)
+
+### Hypothesis
+
+The v1 audition confirmed the architecture (dry intact, series routing,
+LF control) but indicted two structural properties: the ping-pong's
+per-echo decay leans every decaying alternating train toward its lead
+side, and 4 sparse comb modes ring metallic no matter the tuning. v1.1
+fixes both structurally: equal-gain L/R echo pairs (the only monotonic
+envelope with exact cumulative balance) and an 8-line FDN tank whose
+density comes from Householder mixing, not tuning luck — with no new
+public controls.
+
+### Implementation
+
+`dsp/Space/Delay.h/.cpp` — pair-equalized ping-pong. The L->R seed is
+unity (gated near fb=0); the R->L return carries the pair decay fb^2.
+Echoes arrive 1,1,F,F,... with strict L/R alternation and unchanged
+Time meaning. All gains <= 1 (round trip <= fb^2 = 0.72: stability
+trivially preserved), unity DC (sustained content balances exactly),
+echo 1 stays a perfect dry copy. R-seed gate is a linear ramp 0..0.1
+on the smoothed fb, so fb=0 is still a single L echo with R exactly
+silent. Default Time 375 -> 220 ms (connected technical-lead range;
+semantics untouched). Rejected alternatives: fixed R boost (unbalances
+sustained notes — damping is transparent to them — and risks loop gain
+> 1), input damping (dulls the first echo's attack), alternating lead
+side per transient (stateful, lab territory).
+
+`dsp/Space/Reverb.h/.cpp` — 8-line FDN replacing Schroeder/Moorer.
+Send HP 180 Hz kept (audition-approved); 2 series input-diffusion
+allpasses (~8/12 ms, g=0.6); 8 incommensurate tank lines (~31-49 ms)
+with per-line 5.5 kHz damping + T60 gains (same formula: Decay 0..1 ->
+0.25..5 s, rate-independent, 50 ms morph); Householder feedback matrix
+(orthogonal: unconditionally stable with per-line gains < 1); stereo
+from disjoint even/odd line sets (decorrelated, energy-matched). No
+internal modulation (moving-pitch risk on hi-gain guitar; revisit only
+if long decays still ring). Public API unchanged (Decay/Mix only).
+~60 flops/sample, ~80 KB @48 kHz (~160 KB @96 kHz). Rejected: retune
+(topology-limited, measured), Dattorro plate (too much machinery for
+v1.1), nested allpass (decay hard to control).
+
+Offline numbers: full suite 584 checks / 0 failures (21 new). Delay:
+guitar-content wet L/R = 1.002 (was 28:1), sustain 1.09, impulse 3.5
+(HF-only worst case, documented); per-side DC-step pins pair decay +
+one-generation R lag exactly; fb=0 R bit-silent; near-zero fb graceful.
+Reverb: late crest ~3.9 (near-Gaussian; v1 measured 10+), spectral
+flatness ~-2 dB (white noise ~-2.5; v1 peak/avg 6-9x), slopes agree
+44.1/48/96 within ~4%, DC leak ~1e-8, 80/440 Hz wet ratio 0.17,
+extremes finite/bounded. Render proof: first 400 samples bit-identical
+dry vs space; tail differs 8.9 peak.
+
+### Audition setup
+
+Same guitar/DI A/B procedure as v1. Reference chain unchanged (Gate
+-55 dB / 52 ms, TightDrive 0.85/0.50/0.70, 6505 unboosted + Mesa V30).
+New starting takes (exact settings — set by ear from here):
+
+1. subtle rhythm space: Delay OFF; Reverb ON, Decay 0.15, Mix 0.10.
+   Room glue only; mutes must still feel instant.
+2. technical lead: Delay ON, Time 220 ms, Feedback 0.40, Mix 0.22;
+   Reverb ON, Decay 0.40, Mix 0.18. Pairs sit under fast runs; 16th
+   separation must survive.
+3. large atmospheric lead: Delay ON, Time 300 ms, Feedback 0.50,
+   Mix 0.28; Reverb ON, Decay 0.70, Mix 0.26. Wash allowed, dry
+   attack must still lead every note.
+
+CLI: same flags (`--delay-time 220 ...` in the smoke leg). Dev app:
+sliders follow the new default automatically (constant-sourced).
+
+### Expected behavior
+
+What should change vs v1: wet image centered (no left lean);
+repeats feel connected rather than separated (pairs + shorter Time);
+reverb reads as room/depth, not metal/phase; atmospheric take lush,
+not cheap.
+
+What should remain unchanged: everything the v1 audition approved —
+dry attack, LF control, depth-without-wash on fast playing, mute
+tightness, mono fold-down.
+
+Bug tells: left lean on held chords (pair balance broken); R answer
+missing at low fb (seed gate stuck); sudden full R echo when nudging
+fb off 0 (gate discontinuity); metallic tail at Decay 0.7 (FDN still
+too sparse -> modulation revisit); dull first repeats (damping wrong).
+
+### Listening result (v1 real-guitar audition — the input to v1.1)
+
+Delay: alternation clearly audible and correct; dry attack intact;
+technical-lead delay adds depth without washing fast playing. BUT:
+375 ms feels too separated, and the wet image leans noticeably left.
+Reverb: low-end control good; dry attack intact. BUT: metallic/phasey,
+no convincing room; atmospheric setting cheap rather than lush.
+=> v1.1 NOT YET AUDITIONED. Play the three takes above before calling
+it finished; the open question is perceptual, not numerical (numbers
+are all green): does the FDN actually sound like a room on hi-gain
+guitar, and do pairs feel connected at 220 ms?
+
+### Problems
+
+Two test-setup traps during v1.1 (both DSP-correct, both instructive):
+params set AFTER reset exercise the intentional smoothing paths, so
+landing/pinning tests must set params BEFORE reset (documented snap);
+and the R side structurally lags one generation after input stops, so
+pair assertions must be per-side, not mono-sum (mono ratios 0.625/0.4
+looked like a DSP bug; per-side they are exactly 0.25/1.0). Also: an
+initial FDN build shipped a mean-removal matrix mislabeled Householder
+(stable but thinner); probes caught it before tests were written.
+
+### Next step
+
+Real-guitar audition of the three takes above. Candidates if listening
+demands: per-line modulation depth exposure (only if ringing
+persists), delay tone control (only if repeats dull/harsh), reverb
+pre-delay (only if articulation needs more room), ducking hooks
+(still out of scope).
+
+### Transferable learning
+
+- With monotonic decay + fixed lead side + strict alternation, EXACT
+  cumulative balance forces equal-gain pairs — a proof, not a tweak.
+  Any future bouncing effect inherits this.
+- Balance must be probed with representative spectra, not impulses:
+  an impulse overstates one extra damping stage 8x (28:1 vs 1.002 on
+  guitar content). A fixed compensation gain would have "fixed" the
+  impulse while unbalancing sustained notes.
+- Objective metallic metrics that work: short-window late crest
+  (~Gaussian = dense) + spectral flatness in dB (white noise ~-2.5).
+  Full-window crest is envelope-inflated; raw peak/avg sits near the
+  DFT noise floor (~7) and cannot discriminate.
+- Householder factor is (2/N), not (1/N) — the mislabeled version is
+  still stable (eigenvalues 0/-1) so nothing caught it but a probe.
+
+### Senior DSP review requested
+
+- Pair-decay Feedback semantics (per-pair fb^2 vs per-echo fb):
+  confirm the knob still feels right across 0..0.85 — pairs at 0.35
+  decay fast (1,1,.12,.12), which suits leads but changes the knob's
+  learned feel from v1.
+- FDN line lengths (31-49 ms) + diffusion (8/12 ms, g=0.6) + no
+  modulation: chosen from standard practice + probes, not ears yet.
+  Flag any howler risk for hi-gain (e.g. diffusion AP ringing on
+  palm mutes).
+- Seed-gate knee (0.1, linear): inaudible in probes, but confirm no
+  better idiom (e.g. gate on target instead of smoothed value).
+- Spectral-flatness bound (-4 dB) as a permanent metallic guard: is
+  it the right test, or does it risk blessing a flat-but-dead room?
+
+---
+
+## Date
+
+2026-09-17 (later)
+
+### Module
+
+Space v1.2 (modulated FDN reverb; v1.1 real-guitar audition results +
+redesign. Delay untouched — auditioned good.)
+
+### Hypothesis
+
+The v1.1 audition kept the architecture verdict (dry intact, LF
+controlled, Delay now centered and connected) but convicted the static
+8-line FDN heard alone: metallic/phasey, cramped, opens up far less
+than Decay promises. Diagnosis: 31-49 ms tank lines ring a coarse
+modal grid (small-room signature); 2 short diffusers leave a sparse
+early response; zero modulation pins every mode at a fixed frequency
+so the tail can never evolve. v1.2 adopts Dattorro's three signature
+ideas into the validated FDN tank — fixed predelay, deep 4-stage
+diffusion, slowly modulated tank delays — instead of transcribing the
+plate verbatim (lower risk, same perceptual family: modulated FDNs
+are the modern plate/room standard).
+
+### Implementation
+
+`dsp/Space/Reverb.h/.cpp` only — public API identical (Decay/Mix,
+same T60 0.25..5 s mapping, same 180 Hz send HP, same 5.5 kHz tank
+damping, same Householder mixing, same even/odd stereo pickups):
+mono in -> fixed 8 ms predelay -> send HP -> 4 series diffusion
+allpasses (~4/6/9/14 ms, g=0.7) -> 8-line tank, 2 short (~28/36 ms)
+seeding early energy + 6 long (60-86 ms) giving size -> stereo out.
+Each tank line reads through its own slow wobble (+/-0.125 ms at
+0.11-0.43 Hz per line, linear-interp reads, phases parked in reset):
+max pitch deviation well under a cent — modes walked, never chorus.
+One modulated tap per line feeds damping, mixing, and output alike.
+Interpolation is a convex combination and only READ positions move,
+so loop gains — and the energy-contractive stability proof — are
+untouched by modulation. ~60 flops + 8 sinf per sample, ~80 KB @48
+kHz (~200 KB @96 kHz). Rejected: verbatim Dattorro transcription
+(fuzzy-memory constant risk), nested allpass (decay control), static
+sign-pattern stereo widening (per-ear comb-coloration risk).
+
+Offline numbers: full suite 589 checks / 0 failures (5 new). Sine-wet
+wander 1.52 dB (v1.1: 0.001 — lower test bound is the modulation
+regression guard; upper bound the anti-chorus guard); late-tail L/R
+rho ~-0.44 with energy match ~1.0 (width without Delay); crest
+~3.1-3.3 (was 3.9); flatness ~-1.1 dB; decay slopes agree 44.1/48/96
+within ~2%; wet onset exactly 36.0 ms at all rates (8 ms predelay +
+28 ms shortest line — rate-independent in TIME); DC leak ~1e-8;
+80/440 Hz wet ratio 0.05 (was 0.17); 10 s max-decay run finite, peak
+0.054, still decaying. Render proof (reverb ALONE, Decay 0.7 Mix
+0.3): first 400 samples bit-identical to dry; tail differs 0.25 peak.
+
+### Audition setup
+
+Same guitar/DI A/B as v1/v1.1. Reference chain unchanged. New takes
+— the key change: judge the Reverb takes with Delay OFF first
+(acceptance: convincing alone; acceptable-only-with-delay is a fail):
+
+1. subtle room/space: Delay OFF; Reverb ON, Decay 0.18, Mix 0.12.
+   Glue, not wash; mutes instant; must sound like a room, not a pedal.
+2. technical lead: Delay ON, Time 220 ms, Feedback 0.40, Mix 0.22
+   (unchanged — auditioned good); Reverb ON, Decay 0.40, Mix 0.18.
+   First pass with Delay OFF: lead must still sit in a space.
+3. lush atmospheric lead: Delay ON, Time 300 ms, Feedback 0.50,
+   Mix 0.28; Reverb ON, Decay 0.70, Mix 0.26. Delay OFF must still
+   feel large/open/wide — this is the v1.1-failure case, re-test it.
+
+CLI unchanged (`--reverb --reverb-decay 0.7 --reverb-mix 0.3 ...`).
+Dev app unchanged (constant-sourced).
+
+### Expected behavior
+
+What should change vs v1.1: reverb alone reads as space/depth, not
+metal/phase; long Decay genuinely feels large; stereo width obvious
+on headphones with no delay; no fixed pitches emerging over seconds.
+
+What should remain unchanged: everything v1.1 earned — dry attack,
+LF control, Delay behavior (untouched, still centered/connected),
+mono fold-down, mute tightness.
+
+Bug tells: slow audible pulsing/beating (modulation too deep/fast);
+fixed whistling pitch in long tails (wobble not smearing — deepen?);
+room arriving audibly late/detached (predelay too long for the take —
+setting issue unless 8 ms already disconnects); dull wash (damping);
+narrow image with reverb alone (stereo still weak — next lever is
+pickup diversity, not wider constants).
+
+### Listening result (v1.1 real-guitar audition — input to v1.2)
+
+Delay: good, centered, 220 ms connected, dry intact — DO NOT TOUCH.
+Reverb: improved over v1, lows controlled, dry intact; but alone
+still metallic/phasey, cramped at high Decay, opens up less than
+expected; atmospheric gets wider but not lush; with Delay it becomes
+acceptable (delay masks the reverb character). Verdict: reverb must
+stand alone.
+=> v1.2 NOT YET AUDITIONED. Same honest status as every prior round:
+numbers green, ears pending. The perceptual risk is stated plainly —
+no probe hears "lush".
+
+### Problems
+
+None observed offline. One near-miss: an early DC probe over an
+unsettled window read -1.1e-6 and looked like HP leakage; the
+committed-shape window ([2.5,3.0] s) reads ~1e-8 at all rates —
+transient, not leak. Lesson logged: settle-time-aware windows for
+leak tests.
+
+### Next step
+
+Real-guitar audition of the three takes above, Delay-OFF-first.
+Candidates if listening demands: modulation depth exposure (only if
+ringing persists AND wander tests stay green), pickup-diversity
+stereo (only if width still weak), predelay exposure (only if 8 ms
+disconnects rhythm takes), damping corner (only if wash dull).
+
+### Transferable learning
+
+- Dattorro's ideas port as principles (predelay gap, diffusion depth,
+  modulated tank, pickup diversity) without transcribing his network:
+  keep validated machinery (T60 mapping, orthogonal mixing), graft
+  the perceptual levers.
+- A "modulation alive" test needs BOTH bounds: lower (guards
+  frozen-tank regression — v1.1 measures 0.001 dB) and upper
+  (anti-chorus). One-sided bounds would bless either failure.
+- Wet-onset time (first nonzero sample) is a free rate-independence
+  check when lengths scale: 36.0 ms at all three rates.
+- Early-response holes are structural: tank output starts at the
+  shortest line, so short seed lines (not louder diffusion) are the
+  fix that preserves the pure-dry window.
+
+### Senior DSP review requested
+
+- Modulation depth/rate choice (+/-0.125 ms, 0.11-0.43 Hz): probe-set,
+  not ear-set. Too subtle to matter, or enough? Flag chorus/pulsing
+  risk on sustained hi-gain notes especially.
+- Mixed tank lengths (28/36 ms + 60-86 ms): short lines at high Decay
+  carry near-unity gains on a coarse grid — flutter risk the metrics
+  may miss; ears must confirm.
+- Width strategy (disjoint sets + diverging phases, no sign tricks):
+  rho ~-0.44 measured; if audition says narrow, is pickup diversity
+  (at static-coloration risk) the right next lever?
+- Wander bounds (0.2 / 4.0 dB): does the lower bound pin "enough
+  movement to matter" or merely "nonzero"?
+
+---
+
+## Date
+
+2026-09-18
+
+### Module
+
+Space v1.3 (dual-tank cross-coupled plate; v1.2 real-guitar audition
+failure + redesign. Delay accepted — untouched.)
+
+### Hypothesis
+
+The v1.2 audition's spatial complaints (center-heavy, spreads-then-
+collapses, "inverted" vs Delay, never lush alone) share one structural
+root: a single fully-mixed tank is ONE resonant field, so both ears
+ring the same modes at similar levels — and sustained tonal guitar
+correlates across ears no matter how decorrelated the impulse tail
+measures. Probes confirmed the mechanism precisely: a 1760 Hz band sat
+at side/mid 0.32 while neighbors read 1-5 (a centered metallic band in
+the harshness zone). v1.3 splits the field in two: two tanks with
+different modal grids, differential drive, slow rotation cross-feed
+with no favored common mode, and a sign-designed output stage. Width
+becomes structural (different pitches per ear) instead of statistical.
+
+### Implementation
+
+`dsp/Space/Reverb.h/.cpp` only — public API identical (Decay/Mix,
+same T60 0.25..5 s mapping, same 180 Hz send HP, same 5.5 kHz damping,
+same 8 ms predelay, same 4-stage diffusion, same subtle wobble):
+two tanks of 4 modulated lines (A ~269 ms total, B ~277 ms, all eight
+lengths distinct), per-tank Householder-4 mixing, per-pair rotation
+cross-feed (full A<->B exchange over ~0.35 s, coefficients derived in
+reset), differential drive (+dif to A, -dif to B), outputs L =
+own-tank sum with NEGATIVE cross bleed (mirrored for R). Mixing is
+exactly energy-preserving (Householder rows + rotation pairs, both
+orthogonal), so with loop gains < 1 the tank is strictly contractive
+whatever the modulation does. The bleed sign is a deliberate tradeoff
+knob: +0.25 measured center-heavy (S/M 0.36); -0.20 wide (S/M 2.3)
+but spiky bins; -0.15 splits it (S/M ~2.1, mono ~0.32). Mono
+fold-down keeps ~1/3 energy by construction (shared common content,
+same sign). ~75 flops + 8 sinf per sample, ~80 KB @48 kHz (~160 KB
+@96 kHz). Rejected along the way: static sign-pattern widening
+(per-ear comb risk), deeper wobble as the width lever (wrong axis —
+width is structural), pinning single-bin spread (modulation luck, not
+health).
+
+Offline numbers: full suite 599 checks / 0 failures (10 new). S/M arc
+flat ~2.1-2.5 across the whole tail (was 0.36 center-heavy, no
+collapse); triplet-band min 0.99, spread 1.7x; tonal floor 0.67+ at
+every driven pitch; fold-down 0.32; L/R balance 0.96-1.21 over time
+(no rotation seasickness); wander 1.31 dB (inside the 0.2/4.0 guards
+unchanged); crest ~3.9; flatness ~-1.6 dB; slopes agree 44.1/48/96
+within ~1%; onset exactly 37.9 ms at all rates; DC ~1e-8; 80/440 Hz
+wet ratio 0.04; extremes finite/bounded. Render proof (reverb ALONE,
+Decay 0.7 Mix 0.3): first 400 samples bit-identical to dry; tail
+differs 0.25 peak.
+
+### Audition setup
+
+Same guitar/DI A/B as ever. Reference chain unchanged. Takes below —
+judge Delay-OFF first as before (convincing alone or fail):
+
+1. subtle ambience: Delay OFF; Reverb ON, Decay 0.18, Mix 0.12.
+   Glue, not wash; mutes instant; must sound like air, not a pedal.
+2. technical lead: Delay ON, Time 220 ms, Feedback 0.40, Mix 0.22
+   (unchanged); Reverb ON, Decay 0.40, Mix 0.18. Delay-OFF pass:
+   lead must sit inside a believable space.
+3. lush atmospheric plate: Delay ON, Time 300 ms, Feedback 0.50,
+   Mix 0.28; Reverb ON, Decay 0.70, Mix 0.26. Delay OFF must feel
+   large, open, EDGED — width with left/right extremities, not a
+   bigger center. This is the twice-failed case; A/B it against v1.2
+   memory explicitly.
+
+CLI unchanged. Dev app unchanged (constant-sourced).
+
+### Expected behavior
+
+What should change vs v1.2: reverb alone reads wide with extremities
+from the first second; no frequency region sits centered while the
+rest blooms; long Decay feels large and keeps evolving rather than
+settling into a centered hum; high sustained notes bloom wide
+instead of whistling down the middle.
+
+What should remain unchanged: everything earned so far — dry attack
+(onset bit-exact 38 ms), LF control, Delay behavior (untouched),
+mute tightness, mono usability (fold-down keeps ~1/3 energy;
+isolated bins may thin in mono — known plate tradeoff, dry carries).
+
+Bug tells: image leaning/pumping slowly L-R-L (rotation slosh too
+deep — shorten cross-time?); a pitch beaming down the middle on some
+note (a band collapsed — which band?); phasiness on palm mutes
+(diffusion ringing?); wash arriving detached (predelay — setting
+unless 8 ms already disconnects); dullness (damping).
+
+### Listening result (v1.2 real-guitar audition — input to v1.3)
+
+Delay accepted, do not touch. Reverb: better than v1.1 but not
+convincing — still metallic, still cramped, energy center-heavy with
+only a smaller portion reaching the field; tail spreads slightly then
+collapses; "inverted" vs the naturally wide Delay; long Decay never
+lush or open; acceptable only WITH delay (masking, not blending).
+Dry intact throughout.
+=> v1.3 NOT YET AUDITIONED. Numbers green, ears pending — as always,
+no probe hears "lush", and this round's probes were explicitly tuned
+not to be gamed (behavioral bands, floors, arcs — see Problems).
+
+### Problems
+
+Two near-misses, both caught by probes before tests were written.
+First: the initial build used positive output bleed and measured
+S/M 0.36 — the SAME center-heaviness as v1.2 wearing a new tank.
+Derivation (not tuning) located it: mutually-uncorrelated tank sums
+make the bleed sign the whole field ((1-k)/(1+k))^2, so the fix was
+one sign, honestly probed at three settings. Second: deeper wobble
+(0.125 -> 0.25 ms) spiked single-bin side/mid ratios (bins near
+anti-phase read 6-9) while regions stayed smooth — single-bin spread
+is modulation luck, so the committed test pins energy-averaged
+triplets instead; the isolated-bin mono thinning is logged as accepted
+plate behavior (broadband fold-down unaffected, dry carries).
+
+### Next step
+
+Real-guitar audition of the three takes above, Delay-OFF-first, with
+explicit v1.2-memory A/B on take 3. Candidates if listening demands:
+bleed constant (one-line width/mono lever, tradeoffs documented),
+cross-time (evolution speed), wobble depth (only if ringing persists
+AND wander tests stay green), pickup tap points (only if width still
+weak). No new UI controls until ears settle the constants.
+
+### Transferable learning
+
+- One fully-mixed tank = one modal field = centered tonal ringing no
+  matter the impulse-tail decorrelation. Steady-state tonal probes
+  (Goertzel per bin under chord drive), not impulse rho, track what
+  guitarists hear. Any future stereo space effect gets the tonal
+  probe before any topology debate.
+- With mutually-uncorrelated sub-signals, an output MIXING SIGN is a
+  whole-field lever ((1-k)/(1+k))^2 — derive it, probe three points,
+  pick the middle. Signs are architecture, not tuning.
+- Rotation (no real eigenvectors) is the collapse-proof coupler:
+  difference norm preserved by construction, common mode never
+  favored — the property Householder-8 lacked. Prefer it wherever two
+  fields must stay different forever.
+- Test the disease, not the metric: single-bin spread measured
+  modulation luck; triplet regions measure collapse. When a metric
+  wiggles under a mechanism you intend to keep, widen the metric,
+  not the design.
+
+### Senior DSP review requested
+
+- Bleed constant -0.15: the width/mono tradeoff is derived and
+  probed, but "wide enough to satisfy ears" is unproven — is 2.1 the
+  right neighborhood, or should the default stance be wider still?
+- Isolated-bin mono thinning (bins near anti-phase lose room content
+  in fold-down): accepted as plate behavior with dry carrying —
+  confirm acceptability, especially at 440 Hz (measured 8.2 side/mid
+  single-bin; regions unaffected).
+- Cross-time 0.35 s: evolution speed is probe-silent (balance flat
+  0.96-1.21 either way) — only ears can say whether the field
+  evolves too fast/slow/still.
+- Tonal floor bound (0.5, measured 0.67): thinnest margin in the
+  suite — tripwire or false-alarm risk on future retunes?

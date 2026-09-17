@@ -154,8 +154,9 @@ std::string cfToString(CFStringRef s)
 struct TdmEngine::Hal
 {
   std::unique_ptr<MonoRing> ring;
-  std::vector<float> inScratch;  // input thread only
-  std::vector<float> outScratch; // output thread only
+  std::vector<float> inScratch;   // input thread only
+  std::vector<float> outScratch;  // output thread only (rig channel 0 / mono)
+  std::vector<float> outScratchR; // rig channel 1 when stereo
   int inChannels = 0;
   bool inInterleaved = false;
   int outChannels = 0;
@@ -243,23 +244,34 @@ OSStatus TdmEngineAudio::outputProc(AudioDeviceID, const AudioTimeStamp*, const 
       self->underruns_.fetch_add(m - got, std::memory_order_relaxed);
       std::memset(h->outScratch.data() + got, 0, (m - got) * sizeof(float));
     }
+    // Space made the rig stereo-capable: one device channel renders the
+    // mono fold-down, two or more get the L/R pair (extra channels cycle).
+    const int wantStereo = (h->outChannels >= 2) ? 2 : 1;
     const float* bi[1] = {h->outScratch.data()};
-    float* bo[1] = {h->outScratch.data()};
-    self->rig_.processBlock(bi, 1, bo, 1, static_cast<int>(m));
+    float* bo[2] = {h->outScratch.data(), h->outScratchR.data()};
+    self->rig_.processBlock(bi, 1, bo, wantStereo, static_cast<int>(m));
     for (UInt32 i = 0; i < m; ++i)
     {
-      float v = h->outScratch[i];
-      v = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v); // interface clamp, as in the reference standalone
+      const float l = h->outScratch[i];
+      const float r = wantStereo == 2 ? h->outScratchR[i] : l;
       if (h->outInterleaved)
       {
         float* p = static_cast<float*>(outData->mBuffers[0].mData);
         for (int ch = 0; ch < h->outChannels; ++ch)
+        {
+          float v = (ch % 2 == 0) ? l : r;
+          v = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v); // interface clamp, as in the reference standalone
           p[(done + i) * h->outChannels + ch] = v;
+        }
       }
       else
       {
         for (int ch = 0; ch < h->outChannels && static_cast<UInt32>(ch) < outData->mNumberBuffers; ++ch)
+        {
+          float v = (ch % 2 == 0) ? l : r;
+          v = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v); // interface clamp, as in the reference standalone
           static_cast<float*>(outData->mBuffers[ch].mData)[done + i] = v;
+        }
       }
     }
     done += m;
@@ -316,6 +328,7 @@ bool TdmEngine::start(std::string& error)
     h->maxBlock = frameSize > 2048 ? static_cast<int>(frameSize) : 2048;
     h->inScratch.assign(1u << 14, 0.0f); // chunked in inputProc; independent of maxBlock
     h->outScratch.assign(static_cast<size_t>(h->maxBlock), 0.0f);
+    h->outScratchR.assign(static_cast<size_t>(h->maxBlock), 0.0f); // rig right channel when stereo
 
     rig_.reset(outSr, h->maxBlock);
     // A rate change in Audio MIDI Setup between load and start must fail

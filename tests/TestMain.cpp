@@ -14,6 +14,7 @@ void runGateTests();
 void runTrimTests();
 void runTightDriveTests();
 void runToneShapeTests();
+void runSpaceTests();
 void runOutputTrimTests();
 
 namespace
@@ -49,6 +50,7 @@ int main()
   runSuite("trim", runTrimTests);
   runSuite("drive", runTightDriveTests);
   runSuite("toneshape", runToneShapeTests);
+  runSuite("space", runSpaceTests);
   runSuite("outtrim", runOutputTrimTests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());
   for (const auto& f : tdm_test::failures())

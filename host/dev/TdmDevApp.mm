@@ -11,7 +11,8 @@
 //
 // Audition starting point (UI initial state only, not a DSP assumption):
 //   Input 0 dB, Gate ON -55 dB / 52 ms, Drive ON 0.85 / 0.50 / 0.70,
-//   ToneShape ON neutral, Output 0 dB, reference NAM preloaded best-effort.
+//   ToneShape ON neutral, Space OFF (dry brutal rhythm first), Output 0 dB,
+//   reference NAM preloaded best-effort.
 //
 // Hidden flags (also used for headless verification):
 //   --smoke-test   run offline rig/param checks, no GUI, no hardware
@@ -51,6 +52,13 @@ tdm::RigParams auditionDefaults()
   p.weight = 0.5f;
   p.contour = 0.5f;
   p.presence = 0.5f;
+  p.delayEnabled = false; // space off: rhythm tone stays dry until auditioned
+  p.delayTimeMs = tdm::Delay::kDefaultTimeMs;
+  p.delayFeedback = tdm::Delay::kDefaultFeedback;
+  p.delayMix = tdm::SpaceProcessor::kDefaultDelayMix;
+  p.reverbEnabled = false;
+  p.reverbDecay = tdm::Reverb::kDefaultDecay;
+  p.reverbMix = tdm::SpaceProcessor::kDefaultReverbMix;
   p.outputTrimDb = 0.0f;
   return p;
 }
@@ -77,6 +85,11 @@ enum SliderTag
   kTagWeight,
   kTagContour,
   kTagPresence,
+  kTagDelayTime,
+  kTagDelayFb,
+  kTagDelayMix,
+  kTagReverbDecay,
+  kTagReverbMix,
   kTagOutTrim
 };
 
@@ -106,6 +119,16 @@ double resetValueForTag(SliderTag tag)
     return tdm::ToneShape::kDefaultContour;
   case kTagPresence:
     return tdm::ToneShape::kDefaultPresence;
+  case kTagDelayTime:
+    return tdm::Delay::kDefaultTimeMs;
+  case kTagDelayFb:
+    return tdm::Delay::kDefaultFeedback;
+  case kTagDelayMix:
+    return tdm::SpaceProcessor::kDefaultDelayMix;
+  case kTagReverbDecay:
+    return tdm::Reverb::kDefaultDecay;
+  case kTagReverbMix:
+    return tdm::SpaceProcessor::kDefaultReverbMix;
   case kTagOutTrim:
     return tdm::OutputTrim::kDefaultTrimDb;
   }
@@ -141,6 +164,11 @@ int smokeTest()
     check((float)resetValueForTag(kTagWeight) == 0.5f, "reset: weight -> 0.50");
     check((float)resetValueForTag(kTagContour) == 0.5f, "reset: contour -> 0.50");
     check((float)resetValueForTag(kTagPresence) == 0.5f, "reset: presence -> 0.50");
+    check((float)resetValueForTag(kTagDelayTime) == 220.0f, "reset: delay time -> 220 ms");
+    check((float)resetValueForTag(kTagDelayFb) == 0.35f, "reset: delay fb -> 0.35");
+    check((float)resetValueForTag(kTagDelayMix) == 0.25f, "reset: delay mix -> 0.25");
+    check((float)resetValueForTag(kTagReverbDecay) == 0.4f, "reset: reverb decay -> 0.40");
+    check((float)resetValueForTag(kTagReverbMix) == 0.20f, "reset: reverb mix -> 0.20");
     check((float)resetValueForTag(kTagOutTrim) == 0.0f, "reset: output trim -> 0 dB");
     // Double-click behavior on the real control (defined after the control
     // classes below): a synthesized double-click parks the reset value and
@@ -307,6 +335,8 @@ bool probeDoubleClickReset(std::string& detail)
   NSButton* _gateCheck;
   NSButton* _driveCheck;
   NSButton* _shapeCheck;
+  NSButton* _delayCheck;
+  NSButton* _reverbCheck;
   NSTimer* _tick;
 }
 
@@ -384,7 +414,7 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)buildUI
 {
   const CGFloat kWidth = 620;
-  const CGFloat kHeight = 770;
+  const CGFloat kHeight = 1030; // +260 for the Space section (2 checks + 5 rows)
   NSRect frame = NSMakeRect(0, 0, kWidth, kHeight);
   _window = [[NSWindow alloc] initWithContentRect:frame
                                         styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
@@ -549,6 +579,64 @@ bool probeDoubleClickReset(std::string& detail)
                width:kWidth];
   y -= 40;
 
+  // Space section (first stereo stage; both units OFF at audition default
+  // so the rhythm tone stays dry until leads/ambience are auditioned).
+  _delayCheck = [NSButton checkboxWithTitle:@"Delay enable" target:self action:@selector(delayToggled:)];
+  _delayCheck.frame = NSMakeRect(20, y, 180, 22);
+  _delayCheck.state = NSControlStateValueOff; // audition default
+  [_window.contentView addSubview:_delayCheck];
+  y -= 30;
+  [self addSliderRow:@"Delay Time"
+                 tag:kTagDelayTime
+                 min:tdm::Delay::kMinTimeMs
+                 max:tdm::Delay::kMaxTimeMs
+                init:tdm::Delay::kDefaultTimeMs
+               reset:tdm::Delay::kDefaultTimeMs
+                   y:y
+               width:kWidth];
+  y -= 30;
+  [self addSliderRow:@"Delay Fdbk"
+                 tag:kTagDelayFb
+                 min:tdm::Delay::kMinFeedback
+                 max:tdm::Delay::kMaxFeedback
+                init:0.35
+               reset:tdm::Delay::kDefaultFeedback
+                   y:y
+               width:kWidth];
+  y -= 30;
+  [self addSliderRow:@"Delay Mix"
+                 tag:kTagDelayMix
+                 min:tdm::SpaceProcessor::kMinMix
+                 max:tdm::SpaceProcessor::kMaxMix
+                init:0.25
+               reset:tdm::SpaceProcessor::kDefaultDelayMix
+                   y:y
+               width:kWidth];
+  y -= 40;
+  _reverbCheck = [NSButton checkboxWithTitle:@"Reverb enable" target:self action:@selector(reverbToggled:)];
+  _reverbCheck.frame = NSMakeRect(20, y, 180, 22);
+  _reverbCheck.state = NSControlStateValueOff; // audition default
+  [_window.contentView addSubview:_reverbCheck];
+  y -= 30;
+  [self addSliderRow:@"Reverb Decay"
+                 tag:kTagReverbDecay
+                 min:tdm::Reverb::kMinDecay
+                 max:tdm::Reverb::kMaxDecay
+                init:0.40
+               reset:tdm::Reverb::kDefaultDecay
+                   y:y
+               width:kWidth];
+  y -= 30;
+  [self addSliderRow:@"Reverb Mix"
+                 tag:kTagReverbMix
+                 min:tdm::SpaceProcessor::kMinMix
+                 max:tdm::SpaceProcessor::kMaxMix
+                init:0.20
+               reset:tdm::SpaceProcessor::kDefaultReverbMix
+                   y:y
+               width:kWidth];
+  y -= 40;
+
   // Output section.
   [self addSliderRow:@"Output Trim"
                  tag:kTagOutTrim
@@ -600,6 +688,11 @@ bool probeDoubleClickReset(std::string& detail)
   _valueLabels[@(kTagWeight)].stringValue = fmt01(p.weight);
   _valueLabels[@(kTagContour)].stringValue = fmt01(p.contour);
   _valueLabels[@(kTagPresence)].stringValue = fmt01(p.presence);
+  _valueLabels[@(kTagDelayTime)].stringValue = fmtMs(p.delayTimeMs);
+  _valueLabels[@(kTagDelayFb)].stringValue = fmt01(p.delayFeedback);
+  _valueLabels[@(kTagDelayMix)].stringValue = fmt01(p.delayMix);
+  _valueLabels[@(kTagReverbDecay)].stringValue = fmt01(p.reverbDecay);
+  _valueLabels[@(kTagReverbMix)].stringValue = fmt01(p.reverbMix);
   _valueLabels[@(kTagOutTrim)].stringValue = fmtDb(p.outputTrimDb);
 }
 
@@ -654,6 +747,21 @@ bool probeDoubleClickReset(std::string& detail)
   case kTagPresence:
     _engine->rig().setPresence((float)v);
     break;
+  case kTagDelayTime:
+    _engine->rig().setDelayTimeMs((float)v);
+    break;
+  case kTagDelayFb:
+    _engine->rig().setDelayFeedback((float)v);
+    break;
+  case kTagDelayMix:
+    _engine->rig().setDelayMix((float)v);
+    break;
+  case kTagReverbDecay:
+    _engine->rig().setReverbDecay((float)v);
+    break;
+  case kTagReverbMix:
+    _engine->rig().setReverbMix((float)v);
+    break;
   case kTagOutTrim:
     _engine->rig().setOutputTrimDb((float)v);
     break;
@@ -676,6 +784,16 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)shapeToggled:(NSButton*)sender
 {
   _engine->rig().setShapeEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)delayToggled:(NSButton*)sender
+{
+  _engine->rig().setDelayEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)reverbToggled:(NSButton*)sender
+{
+  _engine->rig().setReverbEnabled(sender.state == NSControlStateValueOn);
 }
 
 - (void)toggleAudio:(id)sender

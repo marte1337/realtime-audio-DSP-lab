@@ -1,17 +1,22 @@
 #pragma once
 
 // Rig: Input -> Input Trim -> TechDeathGate -> TightDrive -> NAM A2
-//   -> Cabinet IR -> ToneShape -> Output Trim -> Output.
+//   -> Cabinet IR -> ToneShape -> Space -> Output Trim -> Output.
 //
-// Mono internal path. Multi-channel input is averaged to mono (documented
-// choice: avoids the +6 dB surprise of summing; stereo width tricks come
-// later). Output broadcasts the mono result to every channel.
+// Everything through ToneShape is mono (multi-channel input is averaged
+// to mono: avoids the +6 dB surprise of summing; stereo width tricks come
+// later). Space is the first stereo stage (mono in, L/R out); Output Trim
+// is applied per channel by two deterministic instances, then channels
+// map as: 1 out -> the exact (L+R)/2 fold-down, 2 outs -> L/R, more ->
+// the pair cyclically.
 // Stages without a loaded asset bypass transparently; the gate bypasses
 // exactly until explicitly enabled, preserving Milestone 0 behavior.
 // Input Trim defaults to 0 dB, at which it passes input bit-exactly.
 // TightDrive is disabled by default and bypasses exactly when off.
 // ToneShape is disabled by default and bypasses exactly when off (and is
 // bit-exact at neutral settings from reset when enabled).
+// Delay/Reverb are disabled by default and contribute nothing until
+// explicitly enabled (additive mixes: dry is never scaled).
 // Output Trim defaults to 0 dB, at which it passes input bit-exactly; it
 // only changes post-chain listening level, never NAM drive.
 //
@@ -19,7 +24,9 @@
 // - The atomic parameter setters below (setGateEnabled, setGateThresholdDb,
 //   setGateReleaseMs, setInputTrimDb, setDriveEnabled, setTight, setDrive,
 //   setBite, setShapeEnabled, setWeight, setContour, setPresence,
-//   setOutputTrimDb, setParams) are safe to call from ANY thread,
+//   setDelayEnabled, setDelayTimeMs, setDelayFeedback, setDelayMix,
+//   setReverbEnabled, setReverbDecay, setReverbMix, setOutputTrimDb,
+//   setParams) are safe to call from ANY thread,
 //   including the GUI/control thread while audio runs. They only perform a
 //   clamped lock-free atomic store: no allocation, no locks, no DSP touch.
 // - processBlock() picks up changed values once per call, at the block
@@ -46,6 +53,7 @@
 #include "dsp/Gate/TechDeathGate.h"
 #include "dsp/TightDrive/TightDrive.h"
 #include "dsp/ToneShape/ToneShape.h"
+#include "dsp/Space/SpaceProcessor.h"
 #include "dsp/OutputTrim.h"
 
 namespace tdm
@@ -139,6 +147,38 @@ public:
   float contour() const { return contour_.load(std::memory_order_relaxed); }
   float presence() const { return presence_.load(std::memory_order_relaxed); }
 
+  // Space controls (Delay + Reverb). Both units disabled by default: wet
+  // is silent until explicitly enabled, preserving the dry chain exactly.
+  void setDelayEnabled(bool enabled) { delayEnabled_.store(enabled, std::memory_order_relaxed); }
+  void setDelayTimeMs(float ms)
+  {
+    delayTimeMs_.store(std::clamp(ms, Delay::kMinTimeMs, Delay::kMaxTimeMs), std::memory_order_relaxed);
+  }
+  void setDelayFeedback(float v)
+  {
+    delayFb_.store(std::clamp(v, Delay::kMinFeedback, Delay::kMaxFeedback), std::memory_order_relaxed);
+  }
+  void setDelayMix(float v)
+  {
+    delayMix_.store(std::clamp(v, SpaceProcessor::kMinMix, SpaceProcessor::kMaxMix), std::memory_order_relaxed);
+  }
+  void setReverbEnabled(bool enabled) { reverbEnabled_.store(enabled, std::memory_order_relaxed); }
+  void setReverbDecay(float v)
+  {
+    reverbDecay_.store(std::clamp(v, Reverb::kMinDecay, Reverb::kMaxDecay), std::memory_order_relaxed);
+  }
+  void setReverbMix(float v)
+  {
+    reverbMix_.store(std::clamp(v, SpaceProcessor::kMinMix, SpaceProcessor::kMaxMix), std::memory_order_relaxed);
+  }
+  bool isDelayEnabled() const { return delayEnabled_.load(std::memory_order_relaxed); }
+  float delayTimeMs() const { return delayTimeMs_.load(std::memory_order_relaxed); }
+  float delayFeedback() const { return delayFb_.load(std::memory_order_relaxed); }
+  float delayMix() const { return delayMix_.load(std::memory_order_relaxed); }
+  bool isReverbEnabled() const { return reverbEnabled_.load(std::memory_order_relaxed); }
+  float reverbDecay() const { return reverbDecay_.load(std::memory_order_relaxed); }
+  float reverbMix() const { return reverbMix_.load(std::memory_order_relaxed); }
+
   // Output Trim control. Defaults to 0 dB, which passes input bit-exactly
   // and preserves existing behavior. Post-chain only: loudness matching
   // without touching NAM saturation or drive response.
@@ -170,8 +210,17 @@ private:
   NamStage nam_;
   CabIrStage ir_;
   ToneShape shape_;
-  OutputTrim outTrim_;
+  SpaceProcessor space_;
+  // Dual trim instances (one per stereo channel): identical deterministic
+  // units with identical target histories produce identical gains, so the
+  // dry path stays bit-exact versus the old single instance while L/R can
+  // never skew during a trim move (scalar trim commutes with the linear
+  // Space stage, so this placement is exact, not approximate).
+  OutputTrim outTrimL_;
+  OutputTrim outTrimR_;
   std::vector<float> mono_; // internal scratch, sized maxBlock_
+  std::vector<float> left_; // space stereo scratch, sized maxBlock_
+  std::vector<float> right_; // space stereo scratch, sized maxBlock_
   double sampleRate_ = 0.0;
   int maxBlock_ = 0;
 
@@ -190,6 +239,13 @@ private:
   std::atomic<float> weight_{ToneShape::kDefaultWeight};
   std::atomic<float> contour_{ToneShape::kDefaultContour};
   std::atomic<float> presence_{ToneShape::kDefaultPresence};
+  std::atomic<bool> delayEnabled_{false};
+  std::atomic<float> delayTimeMs_{Delay::kDefaultTimeMs};
+  std::atomic<float> delayFb_{Delay::kDefaultFeedback};
+  std::atomic<float> delayMix_{SpaceProcessor::kDefaultDelayMix};
+  std::atomic<bool> reverbEnabled_{false};
+  std::atomic<float> reverbDecay_{Reverb::kDefaultDecay};
+  std::atomic<float> reverbMix_{SpaceProcessor::kDefaultReverbMix};
   std::atomic<float> outTrimDb_{OutputTrim::kDefaultTrimDb};
 
   // Last values pushed into the stages. Audio/reset-thread only.
@@ -205,6 +261,13 @@ private:
   float appliedWeight_ = ToneShape::kDefaultWeight;
   float appliedContour_ = ToneShape::kDefaultContour;
   float appliedPresence_ = ToneShape::kDefaultPresence;
+  bool appliedDelayEnabled_ = false;
+  float appliedDelayTimeMs_ = Delay::kDefaultTimeMs;
+  float appliedDelayFb_ = Delay::kDefaultFeedback;
+  float appliedDelayMix_ = SpaceProcessor::kDefaultDelayMix;
+  bool appliedReverbEnabled_ = false;
+  float appliedReverbDecay_ = Reverb::kDefaultDecay;
+  float appliedReverbMix_ = SpaceProcessor::kDefaultReverbMix;
   float appliedOutTrimDb_ = OutputTrim::kDefaultTrimDb;
 };
 
