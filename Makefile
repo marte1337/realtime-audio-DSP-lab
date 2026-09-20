@@ -44,8 +44,14 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(patsubst %.mm,$(BUILD)/%.o,$(DEV_SRCS))
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
+
+# Lab pitch prototype: standalone offline tool, deliberately NOT linked into
+# the rig, tests of the rig, or the dev app. Shares only WavFile + LabFft.
+LABPITCH_SRCS := dsp/lab/Pitch/LabFft.cpp dsp/lab/Pitch/LabPitchShift.cpp dsp/lab/Pitch/LabCrossover.cpp dsp/lab/Pitch/LabMultiPitch.cpp dsp/lab/Pitch/LabWsolaShift.cpp dsp/lab/Pitch/LabPitchRender.cpp
+LABPITCH_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(LABPITCH_SRCS))
+LABPITCH_LIB := $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/lab/Pitch/LabPitchShift.o $(BUILD)/dsp/lab/Pitch/LabCrossover.o $(BUILD)/dsp/lab/Pitch/LabMultiPitch.o $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o
 
 FRAMEWORKS := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
 DEV_FRAMEWORKS := $(FRAMEWORKS) -framework Cocoa -framework UniformTypeIdentifiers
@@ -70,9 +76,9 @@ $(BUILD)/%.o: %.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(TDM_FLAGS) -fobjc-arc -c $< -o $@
 
--include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d
+-include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(LABPITCH_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d
 
-$(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS)
+$(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS) $(LABPITCH_LIB)
 	$(CXX) $(STD) $^ -o $@
 
 $(BUILD)/tdm_render: $(TDM_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmRender.o
@@ -83,6 +89,11 @@ $(BUILD)/tdm_live: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmLive.o
 
 $(BUILD)/tdm_dev: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(DEV_OBJS)
 	$(CXX) $(STD) $^ $(DEV_FRAMEWORKS) -o $@
+
+$(BUILD)/tdm_labpitch: $(LABPITCH_OBJS) $(BUILD)/dsp/WavFile.o
+	$(CXX) $(STD) $^ -o $@
+
+labpitch: $(BUILD)/tdm_labpitch
 
 test: $(BUILD)/tdm_tests
 	./$(BUILD)/tdm_tests

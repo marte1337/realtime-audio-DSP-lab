@@ -16,6 +16,9 @@ void runTightDriveTests();
 void runToneShapeTests();
 void runSpaceTests();
 void runOutputTrimTests();
+void runLabPitchTests();
+void runLabMultiTests();
+void runLabWsolaTests();
 
 namespace
 {
@@ -52,6 +55,9 @@ int main()
   runSuite("toneshape", runToneShapeTests);
   runSuite("space", runSpaceTests);
   runSuite("outtrim", runOutputTrimTests);
+  runSuite("labpitch", runLabPitchTests);
+  runSuite("labmulti", runLabMultiTests);
+  runSuite("labwsola", runLabWsolaTests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());
   for (const auto& f : tdm_test::failures())
     std::printf("  FAIL %s\n", f.c_str());

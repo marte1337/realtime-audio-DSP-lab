@@ -1504,3 +1504,366 @@ weak). No new UI controls until ears settle the constants.
   evolves too fast/slow/still.
 - Tonal floor bound (0.5, measured 0.67): thinnest margin in the
   suite — tripwire or false-alarm risk on future retunes?
+## Date
+
+2026-09-18 (later)
+
+### Module
+
+LabPitchShift (`dsp/lab/Pitch/` — STFT phase-vocoder pitch-shifter
+candidate; offline lab tool only, NOT in the rig)
+
+### Hypothesis
+
+The v1 rejection was structural (one stagger cannot serve polyphony),
+so the replacement must handle partials independently with no
+single-fundamental assumption: an STFT phase vocoder with peak phase
+locking and transient phase reset, evaluated on fixed shifts
+(-1/-2/-7/-12) via offline renders of Karplus-Strong guitar DI.
+
+### Implementation
+
+`dsp/lab/Pitch/LabFft.{h,cpp}` (self-contained radix-2 FFT),
+`LabPitchShift.{h,cpp}`, `LabPitchRender.cpp` (`tdm_labpitch` CLI).
+Default config 4096/1024 (Hann, 75% analysis overlap).
+
+CRITICAL junction mid-build: the first revision used DIRECT SPECTRAL
+REMAPPING (synthesis bin m draws magnitude from analysis bin m/ratio
+with copied locked phases). Probes convicted it before any listening:
+a single E3 sine at -7 st returned at the right pitch but 0.14x level
+(0 st rendered full level, proving the same-bin machinery healthy).
+Root cause: phases copied to different bin indices lose carrier
+coherence - adjacent synthesis carriers rendering one partial land at
+arbitrary relative phases (measured ~166 deg apart: |220-171|/391 =
+0.125 vs 0.14 observed) and partially cancel, and different carriers
+of identical content beat at the bin spacing. Direct remapping is
+broken by construction for multi-carrier partials.
+
+The shipped revision is COMPRESS + INTERPOLATE (the standard
+pitch-via-PV topology, same family as DAFX/Rubber Band): the PV
+time-compresses by r (synthesis hop Hs = round(r*Ha) <= Ha, SAME-bin
+mapping so carriers are untouched, phases propagated at measured
+instantaneous frequency with scaled/identity peak locking), then a
+slow cubic read (output o samples the compressed stream at o*r)
+restores duration at pitch x r. No decimation lowpass anywhere, so
+highs transpose instead of vanishing (measured: DI 61.7/92.5/123.5 at
+0.0015/0.0047/0.0121 -> -12 st 30.9/46.2/61.7 at 0.0016/0.0049/0.0121
+- level-exact transposition). Transient frames reset phases to the
+analysis phases (attack shape preserved); peak regions re-derive per
+frame from local magnitude maxima.
+
+Latency is shift-dependent: (N+1) + (N-Ha)(1/r-1) samples -
+4097 (85 ms) at 0 st, 5631 (117 ms) at -7, 7169 (149 ms) at -12,
+13313 (277 ms) at -24 (@48k, default config). The r=1 anchor is
+exact (steady-sine phase slope 4097.0, fit residual 0.001 rad);
+deep-shift group delay carries measurement-limited residual (~150
+samples, audible nowhere) plus genuine seed-curvature dispersion
+(local-slope fits legitimately disagree by hundreds of samples
+across sub-bands - pinned honestly at +-1500 in tests, documented,
+flagged for senior review). Do NOT quote N-Ha (the v1-era number) -
+it ignores the compressed-grid scaling and the streaming lag.
+
+Offline numbers: full suite 787 checks / 0 failures (lab suite ~150:
+FFT round-trip, bypass-exact, silence-exact, 0 st pitch+level identity,
+sine accuracy -1/-2/-7/-12 at 44.1/48/96, KS low-E/pluck accuracy,
+chord coherence + no-dry-ghost, KS power-chord root, continuity,
+-24 finite/bounded, high-transposition pin, latency-formula pins,
+fitted group delay, onset coarse anchor, click confinement, alt
+config, block/reset determinism). F0 on KS-guitar renders: every
+section exact at every shift (only estimator-range exception: 30.9 Hz
+below the ACF floor, confirmed present by Goertzel instead). Render
+speed ~109x realtime single-threaded (17 s in 0.16 s).
+
+### Audition setup
+
+Files (all 48 kHz float32 mono, latency-compensated so attacks align
+with the DI; build/ is gitignored - re-render with the commands below
+if cleaned):
+- build/labpitch_di.wav (DI: low-E notes, chugs, power chords,
+  E-minor strum/arpeggio, 16th riff, low-B chord)
+- build/labpitch/shift_0.wav (PV identity - transparency check)
+- build/labpitch/shift_-1/-2/-7/-12.wav (the evaluation set)
+- build/labpitch/v1_pitch_-7.wav (REJECTED v1 at -7, A/B reference)
+
+Re-render: `python3 scripts/labpitch_synth_di.py && make labpitch &&
+./build/tdm_labpitch --in build/labpitch_di.wav --out <f> --shift <st>`
+
+### Expected behavior
+
+What should change vs DI: pitch only (exact semitone drops), attacks
+slightly softened by window smear (transient reset limits this),
+mild phasiness possible on dense decays (locking limits it).
+
+What should remain unchanged: note/chord coherence (no fragments,
+no stutter, no ghost in-tune voice - structurally impossible, no dry
+path), low-E/low-B stability, pick-attack placement (aligned), level
+(no pumping).
+
+Bug tells: warbling/robotic modulation (locking failure); smeared
+mush on chugs (transient detector missing); octave jumps or wandering
+pitch on low B (resolution failure); dullness vs DI beyond the
+transposition (unexpected loss); any click (continuity bug).
+
+### Listening result
+
+NOT YET AUDITIONED. Do not wire into TechDeathRig/RigParams/tdm_dev
+until ears pass fixed shifts on THIS set. Latency (~85-150 ms) is
+known-unacceptable for live feel - a separate follow-up (smaller N /
+multirate) AFTER the sound is accepted.
+
+### Problems
+
+None observed offline beyond documented items: the remap dead-end
+(above - killed by probes, never auditioned); latency-formula journey
+(N-Ha assumed -> streaming lag found (+Ha+1) -> compressed-grid
+scaling derived -> seed-curvature dispersion accepted at +-1500);
+test-oracle lessons (waveform-RMS identity is wrong for a PV -
+phases are arbitrary, pin pitch+level; chord ghost probes must avoid
+fifth-overlap coincidences; shared-render tones beat in one bin -
+use separate renders for phase fits; onset-crossing measures smear,
+not latency).
+
+### Next step
+
+Real-guitar... no - FIRST: audition THIS KS set (cheap, immediate),
+then real-guitar DI through tdm_labpitch if KS passes. If ears accept
+the sound: latency-reduction study (2048/512? multirate low band?)
+as a second lab iteration, THEN rig-integration proposal. If ears
+reject: the lab holds the corpse and the notebook holds the lesson.
+
+### Transferable learning
+
+- NEVER remap magnitudes across STFT bins with copied phases:
+  carriers are only coherent within their own bin. Transpose AFTER
+  (resample) or stretch BEFORE - never across.
+- For downshift, COMPRESS-first + slow-read beats stretch-first +
+  decimate: no anti-alias lowpass, no top-octave loss, Hs <= Ha so
+  OLA overlap only deepens (no coverage bound to violate).
+- Latency of compress+interpolate scales ~1/r on the window term -
+  derive it, don't assume N-Ha; pin the r=1 anchor exactly (cheap)
+  and bound the deep-shift residual honestly (expensive).
+- PV test oracles: pitch+level (never waveform), separate renders
+  per tone for phase work, ghost probes must dodge musical
+  coincidences (-7 st maps B->E exactly!), onset-crossing is a smear
+  meter not a latency meter.
+- Karplus-Strong DI in stdlib Python is now the house guitar proxy:
+  scripts/labpitch_synth_di.py (chugs/chords/riffs with real pick
+  physics). Reuse for every future pitch/time/lab evaluation.
+
+### Senior DSP review requested
+
+- Scaled phase locking + transient-reset constants (peak floor
+  max/1000, flux threshold median*2+0.015) are probe-set, not
+  ear-set; confirm no howler risk on hi-gain DI (hotter, denser
+  than KS).
+- Exact deep-shift group delay (residual ~150 samples within
+  measurement; dispersion +-1000 across sub-bands at -24): is the
+  (N+1)+(N-Ha)(1/r-1) compensation the right stance, or is there a
+  cleaner latency definition for compress+interpolate?
+- Cubic slow-read for downshift (droop ~1-3 dB at top, images ~-40):
+  acceptable permanently, or plan a better SRC kernel if this
+  graduates?
+- Latency-reduction directions IF ears pass: smaller N (resolution
+  cost on low B?), multirate (complexity), or transient-bypass path
+  (dry-transient mixing risks the ghost this design structurally
+  avoids)?
+
+## Date
+
+2026-09-19
+
+### Module
+
+LabWsolaShift (`dsp/lab/Pitch/` — WSOLA time-domain pitch-shifter
+candidate; offline lab tool only, NOT in the rig)
+
+### Hypothesis
+
+The PV studies concluded: A (4096/1024) has the LF/chord integrity but
+unacceptable latency (89-149 ms); D (2048/256) has better latency
+(45-80 ms) but loses LF/chord energy; multi-resolution inherits A's
+latency plus crossover comb. A fundamentally different TIME-DOMAIN
+pitch shifter (WSOLA time compression + high-quality resampling) can
+beat PV latency while staying musical on polyphonic guitar, because it
+aligns the composite waveform directly instead of resolving partials
+spectrally.
+
+### Implementation
+
+`LabWsolaShift.{h,cpp}` + `--wsola [--wms 20|30|40]` in `tdm_labpitch`.
+Topology: input ring -> normalized-xcorr WSOLA search over symmetric
+tolerance D = W/2 (overlap-target = already-synthesized tail, the only
+window that judges join coherence) -> raised-cosine OLA every
+Hs = round(r*Ha), Ha = W/2 -> cubic slow read at the true rounded
+ratio -> latency FIFO (pops held to tick L, starvation-free by proof).
+Exact-0-st bypass (bit-exact, latency 0). Deterministic across resets
+and block sizes. Configs: 20/30/40 ms windows only.
+
+Time-map rule (the hard-won part, all probe-grounded): DRIFT-SEEKING
+tie-break with transient guard + peg rule. Frame advance Hs (drift /
+exact continuation) IS the shift mechanism (proven: advance Hs makes
+the compressed stream 1:1 with input, so the slow read yields
+input[r*t]; pinned lags yield dry). Among lags within 1e-3 of the max,
+take the closest to exact continuation (periodic ties drift instead of
+center-pinning; pin = dry, the original -1 collapse). Transients
+(HP-energy rise vs trailing average) and PEGGED frames (continuation
+out of range) take the outright max: attacks align, and pegs skip back
+instead of sticking (a stuck peg pins dry - found by probe: permanent
+-D peg at -1). Drift+jump cycles are textbook WSOLA pitch shifting;
+streaming balance is automatic (bounded lags => mean advance Ha).
+
+Two dead ends, killed by probes (kept here so nobody retries them):
+1. A time-map-debt servo enforcing mean advance Ha per frame ("due
+   Ha") froze all drift and output dry everywhere - the model was
+   backwards (Ha is the STREAMING mean, Hs is the per-frame drift
+   target). Deleted.
+2. A wide (0.03) tie band to forgive blend cost admitted off-tie edges
+   (systematic phase errors, broke sine spots) and let pegs stick.
+   Rejected; continuation scores exactly 1.0000 during drift (target
+   is verbatim-dominated), so 1e-3 admits it.
+
+SPAN RULE (the governing physics, predicts every cell): the search span
+2D must cover a strong period of the lowest content for skip-back
+coherence. D = W/4 (span 480/720) pinned low-B (778-sample period) dry
+at wms20/30; D = W/2 (span = W) clears it. Cost: L = W+D+C = 1.5W+C
+(30/45/60 ms) plus hidden time-lag <= D. A 3-sine E2/B2/E3 mixture is
+adversarial worst-case (no harmonics, 24 ms mixture period > span, so the time map sticks and output goes dry):
+permanent peg, documented limitation, NOT gated - real strings carry
+harmonics that lock skip-backs.
+
+### Evidence
+
+Full suite green (1297 checks, 0 failures), including the labwsola
+suite: exact bypass (0-st bit-exact, silence, DC, disabled), latency
+pins + shape, grid-wide no-starvation (3 rates x 3 configs x 5 shifts),
+finite/bounded/deterministic everywhere, KS-first pitch (strict 3%
+median; one edge-corner energy gate at wms20/-12/low-B with 2x margins
+both sides, warble reported not gated), KS power-chord presence
+(recall + coherent dry-rejection with fund+harmonic collision skips),
+sine oracle spots, continuity/impulse.
+
+Objective vs A/D on the KS DI renders (17 s, latency-compensated):
+- F0 exact on sustained E2 at every shift, every config (77.8/73.4/
+  55.0/41.2). Low-B chord: ACF reads sub-octave for ALL methods at
+  -1/-2 (estimator artifact); Goertzel at shifted B1 fund: WSOLA ==
+  A (0.0013-0.0015), D == 0.0001 (10x down - D loses LF, WSOLA keeps
+  A-class LF at 1/2 to 1/5 the latency).
+- Level: WSOLA RMS ratio 1.00-1.03 (unity); A 0.96-1.00; D sags to
+  0.89-0.91 at -12 (chord/LF loss). E5 partial energy: W == A > D.
+- Flutter probe (envelope AM 3-40 Hz on sustain): no excess above DI
+  character (10% @ 5 Hz, DI-inherited) at any config/shift.
+- Double-attack probe (secondary/main peak 5-25 ms post-onset):
+  0.85-0.92 vs DI 0.925 - no doubling evidence (transient guard holds).
+- Onset 10-90% rise (DI 2.7 ms): WSOLA degrades with depth x window
+  (W20-1: 3.5 ms, competitive; W40-12: 39 ms vs A 9.6 / D 7.3).
+  Inherent: transient slop ~W*(1/r-1). THE transient risk for metal.
+- CPU (17 s DI, -7, single thread): A 0.14 s (121x RT), D 0.25 s
+  (68x RT), W20 1.13 s (15x), W30 1.71 s (10x), W40 2.41 s (7x).
+  Realtime-safe margin (7-15% of one core) but 8-17x heavier than PV;
+  search optimization (decimation, shorter Lov) not attempted.
+
+Exact latency @48k (streaming, shift-independent +-2 samples):
+wms20: 1443-1445 (30.1 ms); wms30: 2163-2165 (45.1 ms); wms40:
+2883-2885 (60.1 ms). Beats A (89-149 ms) everywhere; beats D
+(45-80 ms, shift-GROWING) at -7/-12 for wms20/30; wms40 ~ D at -7.
+
+### Audition setup
+
+Files (48 kHz float32 mono, latency-compensated; build/ gitignored):
+- build/labpitch_di.wav (same KS DI as the PV studies)
+- build/labpitch/wsola_20/30/40/shift_0/-1/-2/-7/-12.wav (the matrix)
+- build/labpitch/4096_1024 + 2048_256/shift_*.wav (A/D, re-rendered
+  same-DI for fair comparison)
+
+Re-render: `make labpitch && ./build/tdm_labpitch --in
+build/labpitch_di.wav --out <f> --shift <st> --wsola --wms <20|30|40>`
+
+Recommended audition order (each vs DI, then vs A/D at same shift):
+1. W30 -1 E-notes/chords (the money case: Eb detune feel?)
+2. W30 -2 full DI (D detune: chugs + riff articulation?)
+3. W20 -1/-2 (tightest: transients vs LF tradeoff?)
+4. W40 -2 low-B chord (LF integrity flagship vs A?)
+5. W30 -7 (fifth: musical-interval stress, warble?)
+6. W20 -12 (edge corner: warble documented, how bad by ear?)
+7. W40 -12 vs A-12 (60 vs 149 ms: is WSOLA's LF close? attacks?)
+
+### Expected behavior
+
+What should change vs DI: pitch only (exact semitone drops); attacks
+progressively softened with depth x window (see rise table); possible
+mild chorus movement on dense sustained chords (skip-back rephasing,
+5th partial most affected); edge-corner warble at W20/-12/low-B.
+
+What should remain unchanged: note/chord coherence (no fragments, no
+stutter - none measured), level (unity RMS), low-E/low-B presence
+(A-class), pick-attack placement (aligned on average).
+
+Bug tells: dry bleed-through (peg stuck - none measured on KS DI);
+periodic clicking 8-25 Hz (forced poor joins - design avoids, none
+measured); robotic warble on single notes (would indicate drift
+failure - F0 exact everywhere); dullness beyond transposition (loss);
+double attacks on chugs (guard failure - none measured).
+
+### Listening result
+
+NOT YET AUDITIONED. Do not wire into TechDeathRig until ears pass -1/
+-2 on THIS set. If ears accept: the transient-depth tradeoff is the
+next study (attack-bypass? adaptive Lov?); if ears reject on warble:
+WSOLA is out for polyphonic detune and the lab holds the corpse.
+
+### Problems
+
+- Transient smear scales with depth x window (39 ms rise at W40/-12):
+  inherent to drift+slow-read (within-frame positions stretch); the
+  transient guard aligns attacks but cannot un-stretch them. Audition
+  decides usability per shift/config; metal needs tight attacks.
+- W20/-12/low-B warbles (per-window F0 spread 27.8-30.8 vs want 30.9,
+  median 3% flat): Lov (720) < fund period (778), skip-backs lock
+  harmonics. Energy correct (107%), pitch wanders. Edge corner only.
+- CPU 8-17x PV (search cost): fine offline and realtime-safe, but
+  wasteful; unoptimized (no search decimation attempted).
+- 3-sine mixtures below span floor peg dry (adversarial stimulus,
+  documented, ungated): irrelevant for harmonic content, but proves
+  the span rule sharply.
+
+### Next step
+
+Audition the matrix in the order above (cheap, immediate), then
+real-guitar DI if KS passes. If ears accept -1/-2: propose rig
+integration (fixed-shift detune block?) + transient-depth follow-up.
+If ears reject: record the rejection precisely (which shift/config/
+section, what it sounds like) and close the WSOLA line.
+
+### Transferable learning
+
+- WSOLA pitch-shift rule: drift (advance Hs) is the shift, jumps are
+  the artifact budget, pegs are death. Enforce drift; never pin.
+- Span rule: 2D must cover a strong period of the lowest content, or
+  skip-backs have nothing coherent to land on (peg/mush). Necessary,
+  not sufficient (harmonic ambiguity can still outvote the fund).
+- WSOLA test oracles: KS-first (sine mixtures are adversarial);
+  energy/recall + dry-rejection for polyphony (coherent sums punish
+  warble the ear forgives); skip bins with fund/harmonic collisions
+  (-7 B->E, -12 E->E/2, KS harmonics to 6th); per-window F0 SPREAD is
+  the warble meter; onset rise is the smear meter.
+- Asymmetric search range doesn't save latency: +tol is lookahead
+  (pops), -tol is hidden time-lag (output describes old input). Total
+  time ≈ W + span regardless of split.
+
+### Senior DSP review requested
+
+- D = W/2 (span = W) vs textbook W/4: justified by the span rule for
+  low-B, but doubles search cost and hidden lag (<= D). Sanity-check
+  the latency-vs-coherence trade against alternatives (asymmetric?
+  no - see above).
+- Peg rule (outright max when continuation out of range): correct
+  textbook behavior, but jump JOIN quality at the peg is whatever the
+  landscape offers (0.80-0.93 on mixtures - the roughness budget).
+  Confirm no howler risk on hi-gain DI (hotter/denser than KS).
+- Transient guard constants (HP rise x6, trail rate 0.25, 2-frame
+  seed) are probe-set on KS: confirm on real palm-mutes (faster?
+  hotter?) before any rig talk.
+- Cubic slow-read without oversampling: aliasing risk on bright
+  hi-gain content at deep shifts (images at 2*r*nyquist...)? Measure
+  on real DI if ears pass.
+
