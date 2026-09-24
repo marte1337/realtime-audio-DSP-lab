@@ -14,6 +14,8 @@
 //              [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]
 //              [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]
 //              [--output-trim db]
+//              [--lab-wsola 0|-1|-2|-7]   (LAB AUDITION: W20 WSOLA pre-rig insert)
+//              [--buffer N]              (request CoreAudio buffer frames)
 //   tdm_live --list            (show audio devices and exit)
 //
 // Passing either gate flag enables TechDeathGate (the other keeps its
@@ -30,11 +32,18 @@
 //
 // Audio behavior lives in host/TdmEngine (shared with the developer app);
 // this file is only flag parsing plus the run loop.
+//
+// LAB AUDITION (--lab-wsola): inserts the W20 WSOLA lab shifter before the
+// rig for live guitar evaluation. Shift is fixed for the run (restart to
+// change it); type e + Enter while running to toggle enable (click-free),
+// q + Enter to quit. No latency compensation anywhere in the live path:
+// output lags input by WSOLA latency + device buffering (all printed).
 
 #include <cstdio>
 #include <string>
 
 #include "dsp/RigParams.h"
+#include "host/BufferRequest.h"
 #include "host/TdmEngine.h"
 
 int main(int argc, char** argv)
@@ -42,6 +51,8 @@ int main(int argc, char** argv)
   std::string namPath, irPath, gateThresh, gateRel, inputTrim;
   std::string tight, drive, bite, weight, contour, presence, outputTrim;
   std::string delayTime, delayFb, delayMix, reverbDecay, reverbMix;
+  std::string labWsola;
+  std::string buffer;
   bool driveEnable = false, shapeEnable = false, delayEnable = false, reverbEnable = false;
   for (int i = 1; i < argc; ++i)
   {
@@ -80,7 +91,8 @@ int main(int argc, char** argv)
     if ((a == "--nam" || a == "--ir" || a == "--gate-thresh" || a == "--gate-rel" || a == "--input-trim"
          || a == "--tight" || a == "--drive" || a == "--bite" || a == "--weight" || a == "--contour"
          || a == "--presence" || a == "--delay-time" || a == "--delay-fb" || a == "--delay-mix"
-         || a == "--reverb-decay" || a == "--reverb-mix" || a == "--output-trim")
+         || a == "--reverb-decay" || a == "--reverb-mix" || a == "--output-trim" || a == "--lab-wsola"
+         || a == "--buffer")
         && i + 1 < argc)
     {
       if (a == "--nam")
@@ -115,6 +127,10 @@ int main(int argc, char** argv)
         reverbDecay = argv[++i];
       else if (a == "--reverb-mix")
         reverbMix = argv[++i];
+      else if (a == "--lab-wsola")
+        labWsola = argv[++i];
+      else if (a == "--buffer")
+        buffer = argv[++i];
       else
         outputTrim = argv[++i];
       continue;
@@ -124,7 +140,7 @@ int main(int argc, char** argv)
                 "       [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]\n"
                 "       [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]\n"
                 "       [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]\n"
-                "       [--output-trim db] | --list\n");
+                "       [--output-trim db] [--lab-wsola 0|-1|-2|-7] [--buffer N] | --list\n");
     return 2;
   }
 
@@ -183,6 +199,34 @@ int main(int argc, char** argv)
     if (!outputTrim.empty())
       params.outputTrimDb = std::stof(outputTrim);
     engine.rig().setParams(params);
+    if (!labWsola.empty())
+    {
+      const float st = std::stof(labWsola);
+      if (st != 0.0f && st != -1.0f && st != -2.0f && st != -7.0f)
+      {
+        std::printf("tdm_live: error: --lab-wsola must be one of 0|-1|-2|-7\n");
+        return 2;
+      }
+      engine.configureLabWsola(st);
+    }
+    if (!buffer.empty())
+    {
+      int b = 0;
+      try
+      {
+        b = std::stoi(buffer);
+      }
+      catch (...)
+      {
+        b = 0;
+      }
+      if (b <= 0)
+      {
+        std::printf("tdm_live: error: --buffer must be a positive frame count\n");
+        return 2;
+      }
+      engine.setRequestedBufferFrames(b);
+    }
 
     std::string error;
     if (!namPath.empty() && !engine.loadNam(namPath, error))
@@ -208,11 +252,50 @@ int main(int argc, char** argv)
                 applied.driveEnabled ? "on" : "off", applied.shapeEnabled ? "on" : "off",
                 applied.delayEnabled ? "on" : "off", applied.reverbEnabled ? "on" : "off",
                 applied.outputTrimDb);
-    std::printf("press q + Enter to quit\n");
+    {
+      // Startup latency report: requested vs ACTUAL everywhere. Nothing is
+      // compensated: output lags input by the printed total. Ring slack is
+      // the input-thread/output-thread decoupling (~0 to 1 output block).
+      const double sr = engine.sampleRate();
+      const int inb = engine.inputBufferFrames(), outb = engine.outputBufferFrames();
+      const int req = engine.requestedBufferFrames();
+      const int wlat = engine.labWsolaLatency();
+      const double devMs = 1000.0 * (inb + outb) / sr;
+      const double wsolaMs = 1000.0 * wlat / sr;
+      const double slackMs = 1000.0 * outb / sr;
+      std::printf("audio: rate=%.0fHz requested buffer=%s\n", sr,
+                  req > 0 ? std::to_string(req).c_str() : "default (flag omitted)");
+      std::printf("audio: %s\n",
+                  tdm_host::bufferReportLine("input", req > 0 ? static_cast<unsigned>(req) : 0,
+                                             static_cast<unsigned>(inb), engine.inputBufferNote())
+                      .c_str());
+      std::printf("audio: in-device='%s'\n", engine.inputDeviceName().c_str());
+      std::printf("audio: %s\n",
+                  tdm_host::bufferReportLine("output", req > 0 ? static_cast<unsigned>(req) : 0,
+                                             static_cast<unsigned>(outb), engine.outputBufferNote())
+                      .c_str());
+      std::printf("audio: out-device='%s'\n", engine.outputDeviceName().c_str());
+      if (engine.labWsolaConfigured())
+        std::printf("lab-wsola: W20 shift=%.0f st ENABLED (chain: input -> wsola -> rig -> output)\n",
+                    std::stof(labWsola));
+      std::printf("latency: device=%.1fms wsola=%.1fms ring-slack~0-%.1fms => total ~%.1f-%.1fms (uncompensated)\n",
+                  devMs, wsolaMs, slackMs, devMs + wsolaMs, devMs + wsolaMs + slackMs);
+    }
+    std::printf("press q + Enter to quit%s\n",
+                engine.labWsolaConfigured() ? ", e + Enter to toggle pitch" : "");
+    bool wsOn = true;
     char line[64] = {};
     while (std::fgets(line, sizeof(line), stdin) != nullptr)
+    {
       if (line[0] == 'q' || line[0] == 'Q')
         break;
+      if ((line[0] == 'e' || line[0] == 'E') && engine.labWsolaConfigured())
+      {
+        wsOn = !wsOn;
+        engine.setLabWsolaEnabled(wsOn);
+        std::printf("lab-wsola: %s (latency-matched bypass, constant feel)\n", wsOn ? "ENABLED" : "bypassed");
+      }
+    }
 
     engine.stop();
     std::printf("stopped: blocks=%llu underrunFrames=%llu overrunFrames=%llu\n",

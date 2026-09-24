@@ -10,7 +10,7 @@
 // same compress-first/slow-read pairing as LabPitchShift, with waveform
 // overlap-add replacing the phase vocoder as the compression engine.
 // For target ratio r <= 1 (r = 2^(st/12)): analysis frames of length W
-// every Ha = W/2 are each refined by d in [-D, +D] (D = W/4) maximizing
+// every Ha = W/2 are each refined by d in [-D, +D] (D = W/2) maximizing
 // NORMALIZED cross-correlation against the already-synthesized tail,
 // then overlap-added every Hs = round(r*Ha) with a raised-cosine
 // crossfade, subject to DRIFT-SEEKING TIE-BREAK with TRANSIENT GUARD:
@@ -43,10 +43,9 @@
 // Polyphony is structural (correlation sees the mix, never a "period"),
 // but quality hinges on lock consistency: consecutive frames must lock
 // at the same relative phase or joins modulate (flutter/chorusing).
-// D covers only part of a 16 ms low-B period, so low-string locks are
-// the known risk; there is deliberately NO transient detector in v1
-// (pure WSOLA baseline - transient duplication/softening is expected
-// and will be measured honestly, not tuned away blind).
+// Span rule: 2D = W must cover a strong period of the lowest content or
+// skip-backs peg/mush (low-B needs W20+ at D = W/2 - probed). Attacks
+// take the outright max via the HP-energy transient guard (see .cpp).
 //
 // Latency is shift-dependent only through rounding: W + D + C samples,
 // where C = ceil(3/ar-1) is the smallest margin that provably prevents

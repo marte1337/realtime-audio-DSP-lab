@@ -16,6 +16,9 @@
 #include <string>
 #include <vector>
 
+#include "dsp/lab/Pitch/LabWsolaLive.h" // LAB AUDITION only (cpp-local)
+#include "host/BufferRequest.h" // pure request validation (no HAL here)
+
 // Private HAL access for the IO procs (lets the public header stay free of
 // CoreAudio types).
 struct TdmEngineAudio
@@ -146,6 +149,22 @@ std::string cfToString(CFStringRef s)
     CFStringGetCString(s, buf, sizeof(buf), kCFStringEncodingUTF8);
   return buf;
 }
+
+std::string deviceName(AudioDeviceID dev)
+{
+  CFStringRef name = nullptr;
+  UInt32 n = sizeof(name);
+  AudioObjectPropertyAddress addr = {kAudioDevicePropertyDeviceNameCFString, kAudioObjectPropertyScopeGlobal,
+                                     kAudioObjectPropertyElementMain};
+  std::string label = "?";
+  if (AudioObjectGetPropertyData(dev, &addr, 0, nullptr, &n, &name) == noErr)
+  {
+    label = cfToString(name);
+    if (name != nullptr)
+      CFRelease(name);
+  }
+  return label;
+}
 } // namespace
 
 // Live HAL state. Owned by TdmEngine, alive only between start() and stop().
@@ -157,6 +176,8 @@ struct TdmEngine::Hal
   std::vector<float> inScratch;   // input thread only
   std::vector<float> outScratch;  // output thread only (rig channel 0 / mono)
   std::vector<float> outScratchR; // rig channel 1 when stereo
+  tdm::lab::LabWsolaLive wsola; // LAB AUDITION: pre-rig insert, output thread only
+  bool wsolaOn = false; // armed at start(), immutable while running
   int inChannels = 0;
   bool inInterleaved = false;
   int outChannels = 0;
@@ -244,6 +265,9 @@ OSStatus TdmEngineAudio::outputProc(AudioDeviceID, const AudioTimeStamp*, const 
       self->underruns_.fetch_add(m - got, std::memory_order_relaxed);
       std::memset(h->outScratch.data() + got, 0, (m - got) * sizeof(float));
     }
+    // LAB AUDITION (not production): W20 WSOLA pre-rig insert, in place.
+    if (h->wsolaOn)
+      h->wsola.processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
     // Space made the rig stereo-capable: one device channel renders the
     // mono fold-down, two or more get the L/R pair (extra channels cycle).
     const int wantStereo = (h->outChannels >= 2) ? 2 : 1;
@@ -322,15 +346,78 @@ bool TdmEngine::start(std::string& error)
       throw std::runtime_error("input (" + std::to_string(inSr) + " Hz) and output (" + std::to_string(outSr)
                                + " Hz) rates differ; align them in Audio MIDI Setup");
 
+    if (reqBuf_ > 0)
+    {
+      // Requested buffer size: validate per distinct device against its
+      // reported range, set, then verify by read-back. Same-device duplex
+      // input/output is programmed once. Anything unexpected fails loudly
+      // here (pre-audio); a read-back that merely differs is reported via
+      // the buffer notes and the run continues with ACTUALS.
+      const unsigned want = static_cast<unsigned>(reqBuf_);
+      const AudioDeviceID devs[2] = {inDev, outDev};
+      std::string* notes[2] = {&inBufNote_, &outBufNote_};
+      const char* roles[2] = {"input", "output"};
+      for (int k = 0; k < 2; ++k)
+      {
+        if (k == 1 && devs[1] == devs[0])
+        {
+          *notes[1] = *notes[0]; // shared duplex device: set once above
+          continue;
+        }
+        AudioValueRange range{0.0, 0.0};
+        UInt32 rn = sizeof(range);
+        AudioObjectPropertyAddress ra = {kAudioDevicePropertyBufferFrameSizeRange,
+                                         kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+        if (AudioObjectGetPropertyData(devs[k], &ra, 0, nullptr, &rn, &range) == noErr)
+        {
+          const tdm_host::BufferAsk ask = tdm_host::checkBufferRequest(
+              want, static_cast<unsigned>(range.mMinimum), static_cast<unsigned>(range.mMaximum));
+          if (!ask.ok)
+          {
+            char why[160];
+            std::snprintf(why, sizeof(why), "buffer %u %s (device %s range %.0f..%.0f)", want, ask.note,
+                          roles[k], range.mMinimum, range.mMaximum);
+            error = why;
+            return false;
+          }
+        }
+        UInt32 set = want;
+        AudioObjectPropertyAddress sa = {kAudioDevicePropertyBufferFrameSize,
+                                         kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+        if (AudioObjectSetPropertyData(devs[k], &sa, 0, nullptr, sizeof(set), &set) != noErr)
+        {
+          error = std::string("set ") + roles[k] + " buffer size (OSStatus)";
+          return false;
+        }
+        const UInt32 actual = deviceFrameSize(devs[k]);
+        if (actual != want)
+        {
+          char note[128];
+          std::snprintf(note, sizeof(note), "requested %u, device runs %u", want, actual);
+          *notes[k] = note;
+        }
+      }
+    }
     deviceFormat(inDev, true, h->inChannels, h->inInterleaved);
     deviceFormat(outDev, false, h->outChannels, h->outInterleaved);
-    const UInt32 frameSize = deviceFrameSize(outDev);
+    inFrames_ = static_cast<int>(deviceFrameSize(inDev));
+    outFrames_ = static_cast<int>(deviceFrameSize(outDev));
+    inDevName_ = deviceName(inDev);
+    outDevName_ = deviceName(outDev);
+    const UInt32 frameSize = static_cast<UInt32>(outFrames_);
     h->maxBlock = frameSize > 2048 ? static_cast<int>(frameSize) : 2048;
     h->inScratch.assign(1u << 14, 0.0f); // chunked in inputProc; independent of maxBlock
     h->outScratch.assign(static_cast<size_t>(h->maxBlock), 0.0f);
     h->outScratchR.assign(static_cast<size_t>(h->maxBlock), 0.0f); // rig right channel when stereo
 
     rig_.reset(outSr, h->maxBlock);
+    if (labWsolaOn_)
+    {
+      // LAB AUDITION: throws (bad shift/rate) inside the try => clean error.
+      h->wsola.prepare(outSr, labWsolaShift_, true, h->maxBlock);
+      h->wsolaOn = true;
+      labWsolaEnabled_ = true;
+    }
     // A rate change in Audio MIDI Setup between load and start must fail
     // loudly: there is no resampler, and a stale asset would play wrong.
     if (rig_.hasNam())
@@ -351,14 +438,24 @@ bool TdmEngine::start(std::string& error)
 
     h->inDev = inDev;
     h->outDev = outDev;
-    halCheck(AudioDeviceCreateIOProcID(inDev, TdmEngineAudio::inputProc, this, &h->inProc), "create input proc");
-    halCheck(AudioDeviceCreateIOProcID(outDev, TdmEngineAudio::outputProc, this, &h->outProc), "create output proc");
-    halCheck(AudioDeviceStart(inDev, h->inProc), "start input");
-    h->inStarted = true;
-    halCheck(AudioDeviceStart(outDev, h->outProc), "start output");
-    h->outStarted = true;
-
+    // LIFECYCLE INVARIANT: publish callback-visible state BEFORE any
+    // AudioDeviceStart. CoreAudio may invoke the IOProc on the IO thread
+    // before AudioDeviceStart returns; everything the procs touch (ring,
+    // scratches, channels, maxBlock, wsola, rig_) is final below, and the
+    // proc IDs / started flags filled in after publish are never read by
+    // callbacks. Publishing after Start raced null hal_ against the first
+    // callback (crashed inputProc once small buffers made the first
+    // callback arrive early: ldp [x23,#8] with x23 = null Hal*).
     hal_ = std::move(h);
+    halCheck(AudioDeviceCreateIOProcID(inDev, TdmEngineAudio::inputProc, this, &hal_->inProc),
+             "create input proc");
+    halCheck(AudioDeviceCreateIOProcID(outDev, TdmEngineAudio::outputProc, this, &hal_->outProc),
+             "create output proc");
+    halCheck(AudioDeviceStart(inDev, hal_->inProc), "start input");
+    hal_->inStarted = true;
+    halCheck(AudioDeviceStart(outDev, hal_->outProc), "start output");
+    hal_->outStarted = true;
+
     sampleRate_ = outSr;
     blocks_.store(0, std::memory_order_relaxed);
     underruns_.store(0, std::memory_order_relaxed);
@@ -368,14 +465,21 @@ bool TdmEngine::start(std::string& error)
   }
   catch (const std::exception& e)
   {
-    if (h->outStarted)
-      AudioDeviceStop(h->outDev, h->outProc);
-    if (h->inStarted)
-      AudioDeviceStop(h->inDev, h->inProc);
-    if (h->outProc != nullptr)
-      AudioDeviceDestroyIOProcID(h->outDev, h->outProc);
-    if (h->inProc != nullptr)
-      AudioDeviceDestroyIOProcID(h->inDev, h->inProc);
+    // Unwind via whichever object owns the HAL state: failures before
+    // publish hold it in the local (auto-freed on unwind); failures after
+    // publish must stop/destroy via hal_ (IO threads may reference it).
+    // hal_ here is either null or ours: start() refuses while running and
+    // stop()/prior failures always clear it.
+    Hal* live = hal_ ? hal_.get() : h.get();
+    if (live->outStarted)
+      AudioDeviceStop(live->outDev, live->outProc);
+    if (live->inStarted)
+      AudioDeviceStop(live->inDev, live->inProc);
+    if (live->outProc != nullptr)
+      AudioDeviceDestroyIOProcID(live->outDev, live->outProc);
+    if (live->inProc != nullptr)
+      AudioDeviceDestroyIOProcID(live->inDev, live->inProc);
+    hal_.reset();
     error = e.what();
     return false;
   }
@@ -431,6 +535,20 @@ bool TdmEngine::loadIr(const std::string& path, std::string& error)
   }
 }
 
+void TdmEngine::setLabWsolaEnabled(bool enabled)
+{
+  labWsolaEnabled_ = enabled;
+  if (hal_) // control thread only; null unless running (start/stop own it)
+    hal_->wsola.setEnabled(enabled); // atomic request, safe mid-run
+}
+
+int TdmEngine::labWsolaLatency() const
+{
+  if (!hal_ || !hal_->wsolaOn)
+    return 0;
+  return hal_->wsola.latencySamples();
+}
+
 bool TdmEngine::listDevices(std::string& out, std::string& error)
 {
   try
@@ -446,18 +564,7 @@ bool TdmEngine::listDevices(std::string& out, std::string& error)
     char line[512];
     for (AudioDeviceID d : devs)
     {
-      CFStringRef name = nullptr;
-      UInt32 n = sizeof(name);
-      AudioObjectPropertyAddress na = {kAudioDevicePropertyDeviceNameCFString, kAudioObjectPropertyScopeGlobal,
-                                       kAudioObjectPropertyElementMain};
-      std::string label = "?";
-      if (AudioObjectGetPropertyData(d, &na, 0, nullptr, &n, &name) == noErr)
-      {
-        label = cfToString(name);
-        if (name != nullptr)
-          CFRelease(name);
-      }
-      std::snprintf(line, sizeof(line), "id=%u name=%s in=%.0fHz out=%.0fHz\n", d, label.c_str(),
+      std::snprintf(line, sizeof(line), "id=%u name=%s in=%.0fHz out=%.0fHz\n", d, deviceName(d).c_str(),
                     deviceSampleRate(d), deviceSampleRate(d));
       out += line;
     }

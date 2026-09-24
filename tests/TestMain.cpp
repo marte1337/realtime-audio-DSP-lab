@@ -19,6 +19,8 @@ void runOutputTrimTests();
 void runLabPitchTests();
 void runLabMultiTests();
 void runLabWsolaTests();
+void runLabWsolaLiveTests();
+void runHostBufferTests();
 
 namespace
 {
@@ -58,6 +60,8 @@ int main()
   runSuite("labpitch", runLabPitchTests);
   runSuite("labmulti", runLabMultiTests);
   runSuite("labwsola", runLabWsolaTests);
+  runSuite("labwsolalive", runLabWsolaLiveTests);
+  runSuite("hostbuffer", runHostBufferTests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());
   for (const auto& f : tdm_test::failures())
     std::printf("  FAIL %s\n", f.c_str());

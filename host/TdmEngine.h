@@ -19,6 +19,12 @@
 //   between load and start fails loudly instead of playing wrong.
 // - No GUI/host toolkit types here: this header is plain C++ and is shared
 //   by tdm_live, the developer app, and any future Standalone/VST3/AU shell.
+//
+// LAB AUDITION hook (temporary, not production architecture): an optional
+// W20 WSOLA pitch insert before the rig, configured pre-start via
+// configureLabWsola() and toggled live via setLabWsolaEnabled(). Shift is
+// fixed for the run (stop/change/start to change it). The dev app never
+// configures it. No RigParams involvement.
 
 #include <atomic>
 #include <cstdint>
@@ -68,6 +74,42 @@ public:
   // One-line-per-device inventory for CLIs ("id=.. name=.. in=..Hz out=..Hz").
   static bool listDevices(std::string& out, std::string& error);
 
+  // LAB AUDITION: arm the W20 WSOLA pre-rig insert (control thread,
+  // pre-start; takes effect on start()). shiftSt must be one of
+  // {0,-1,-2,-7}; anything else fails start() with a clean error.
+  // Shift is fixed for the run: stop/change/start to change it.
+  void configureLabWsola(float shiftSt)
+  {
+    labWsolaOn_ = true;
+    labWsolaShift_ = shiftSt;
+  }
+  bool labWsolaConfigured() const { return labWsolaOn_; }
+  // LAB AUDITION: live enable toggle (any thread while running; atomic
+  // request, click-free ramp in the wrapper). No-op when stopped; the
+  // start state is always enabled.
+  void setLabWsolaEnabled(bool enabled);
+  bool labWsolaEnabled() const { return labWsolaEnabled_; }
+  // LAB AUDITION: shifter algorithmic latency in samples (valid while
+  // running with the insert configured, else 0). The live path does NOT
+  // compensate it: output lags input by this plus device buffering.
+  int labWsolaLatency() const;
+  // Actual device buffer sizes + names captured at start() (0/empty
+  // unless running). Used for honest live-latency accounting.
+  int inputBufferFrames() const { return inFrames_; }
+  int outputBufferFrames() const { return outFrames_; }
+  const std::string& inputDeviceName() const { return inDevName_; }
+  const std::string& outputDeviceName() const { return outDevName_; }
+  // Requested CoreAudio buffer frame size (control thread, pre-start;
+  // 0 = flag omitted = leave devices alone, the historical behavior).
+  // Applied per distinct device at start(): validated against the
+  // device-reported range, then verified by read-back. Same-device
+  // duplex input/output is set once. A read-back that differs from the
+  // request is reported via input/outputBufferNote(), never claimed.
+  void setRequestedBufferFrames(int frames) { reqBuf_ = frames; }
+  int requestedBufferFrames() const { return reqBuf_; }
+  const std::string& inputBufferNote() const { return inBufNote_; }
+  const std::string& outputBufferNote() const { return outBufNote_; }
+
 private:
   friend struct TdmEngineAudio; // IO procs (defined in TdmEngine.cpp)
 
@@ -80,6 +122,18 @@ private:
   std::string namPath_;
   std::string irPath_;
   double sampleRate_ = 0.0;
+
+  // LAB AUDITION config (control thread, pre-start) + start() captures.
+  bool labWsolaOn_ = false;
+  float labWsolaShift_ = 0.0f;
+  bool labWsolaEnabled_ = true; // live-toggle mirror (start state: on)
+  int inFrames_ = 0;
+  int outFrames_ = 0;
+  std::string inDevName_;
+  std::string outDevName_;
+  int reqBuf_ = 0; // 0 = omitted
+  std::string inBufNote_; // read-back mismatch notes, empty when exact
+  std::string outBufNote_;
 
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> blocks_{0};
