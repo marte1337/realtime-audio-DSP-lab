@@ -19,6 +19,7 @@ void runOutputTrimTests();
 void runLabPitchTests();
 void runLabMultiTests();
 void runLabWsolaTests();
+void runLabWsolaLatencyTests();
 void runLabWsolaLiveTests();
 void runHostBufferTests();
 
@@ -60,6 +61,7 @@ int main()
   runSuite("labpitch", runLabPitchTests);
   runSuite("labmulti", runLabMultiTests);
   runSuite("labwsola", runLabWsolaTests);
+  runSuite("labwsolalatency", runLabWsolaLatencyTests);
   runSuite("labwsolalive", runLabWsolaLiveTests);
   runSuite("hostbuffer", runHostBufferTests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());

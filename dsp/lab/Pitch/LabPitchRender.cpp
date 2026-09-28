@@ -4,12 +4,15 @@
 //   tdm_labpitch --in di.wav --out shifted.wav --shift -7 [--fft 4096] [--hop 1024]
 //   tdm_labpitch --in di.wav --out shifted.wav --shift -7 --multi
 //   tdm_labpitch --in di.wav --out shifted.wav --shift -7 --wsola [--wms 20|30|40]
+//   tdm_labpitch --in di.wav --out shifted.wav --shift -1 --wsola --wms 20 --tol 640:320
 //
 // Renders the input through LabPitchShift (or LabMultiPitch with --multi,
 // LabWsolaShift with --wsola; no rig, no NAM, no IR in any case). --multi
 // rejects --fft/--hop (band configs are study-pinned inside LabMultiPitch).
 // --wsola rejects --fft/--hop/--multi; --wms selects the study-pinned
-// WSOLA window (default 30 ms).
+// WSOLA window (default 30 ms); --tol M:P selects the latency-study
+// asymmetric search (lags [-M, +P] in samples, each in [1, W]; default
+// symmetric W/2, the accepted baseline).
 // --shift 0 is a true bit-exact bypass (latency 0, output == input).
 // Output is latency-compensated: the tool feeds latency + tail extra
 // zeros and drops the first latency outputs, so out[i] corresponds to
@@ -30,7 +33,8 @@ namespace
 void usage()
 {
   std::printf("usage: tdm_labpitch --in di.wav --out shifted.wav --shift -24..0 "
-              "[--fft 256..16384] [--hop N/8..N/2] [--multi] [--wsola [--wms 20|30|40]]\n");
+              "[--fft 256..16384] [--hop N/8..N/2] [--multi] [--wsola [--wms 14|16|20|30|40] "
+              "[--tol M:P]]\n");
 }
 
 // Shared offline render: feed input + latency + tail zeros in blocks,
@@ -62,7 +66,7 @@ std::vector<float> renderThrough(P& p, const std::vector<float>& in, int* latenc
 
 int main(int argc, char** argv)
 {
-  std::string inPath, outPath, shift, fft, hop, wms;
+  std::string inPath, outPath, shift, fft, hop, wms, tol;
   bool multi = false;
   bool wsola = false;
   for (int i = 1; i < argc; ++i)
@@ -93,6 +97,8 @@ int main(int argc, char** argv)
       wsola = true;
     else if (a == "--wms")
       need("--wms", wms);
+    else if (a == "--tol")
+      need("--tol", tol);
     else
     {
       usage();
@@ -117,6 +123,11 @@ int main(int argc, char** argv)
   if (!wms.empty() && !wsola)
   {
     std::printf("tdm_labpitch: --wms needs --wsola\n");
+    return 2;
+  }
+  if (!tol.empty() && !wsola)
+  {
+    std::printf("tdm_labpitch: --tol needs --wsola\n");
     return 2;
   }
 
@@ -145,13 +156,23 @@ int main(int argc, char** argv)
       tdm::lab::LabWsolaShift p;
       if (!wms.empty())
         p.setConfig(std::stod(wms));
+      if (!tol.empty())
+      {
+        const size_t colon = tol.find(':');
+        if (colon == std::string::npos)
+        {
+          std::printf("tdm_labpitch: --tol must be M:P in samples\n");
+          return 2;
+        }
+        p.setSearch(std::stoi(tol.substr(0, colon)), std::stoi(tol.substr(colon + 1)));
+      }
       p.setShiftSt(shiftSt);
       p.setEnabled(true);
       p.reset(in.sampleRate);
       out = renderThrough(p, in.samples, &lat);
       char buf[128];
-      std::snprintf(buf, sizeof(buf), "wsola(W=%d,Ha=%d,Hs=%d,D=%d)", p.frameLen(), p.analysisHop(),
-                    p.synthHop(), p.tolerance());
+      std::snprintf(buf, sizeof(buf), "wsola(W=%d,Ha=%d,Hs=%d,Dm=%d,Dp=%d)", p.frameLen(), p.analysisHop(),
+                    p.synthHop(), p.tolMinus(), p.tolPlus());
       cfg = buf;
     }
     else

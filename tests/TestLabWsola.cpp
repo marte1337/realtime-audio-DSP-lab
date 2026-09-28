@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 #include "dsp/lab/Pitch/LabWsolaShift.h"
@@ -507,6 +508,87 @@ void runLabWsolaTests()
         std::snprintf(msg, sizeof(msg), "wsola wms=%.0f st=%.0f onset bound", wms, st);
         TDM_CHECK(cross >= 0 && cross >= t0 - 16 && cross <= t0 + slop + 16, msg);
       }
+    }
+  }
+  { // Frame-trace diagnostics: default off (no records); enabling is
+    // read-only (bitwise-identical render); records are self-consistent;
+    // landscape() matches the last searched frame.
+    const double sr = 48000.0;
+    const int n = static_cast<int>(sr * 1.0);
+    std::vector<float> in = ksPluck(0.4f, 82.41f, sr, n);
+    mixInto(in, ksPluck(0.3f, 123.47f, sr, n, 0.996f, 0x2222u));
+    auto renderTraced = [&](bool traceOn, bool asym) {
+      tdm::lab::LabWsolaShift p;
+      p.setConfig(20.0);
+      if (asym)
+        p.setSearch(640, 320);
+      p.setEnabled(true);
+      p.setShiftSt(-7.0f);
+      p.reset(sr);
+      p.enableTrace(traceOn);
+      const int lat = p.latencySamples();
+      const int paddedN = n + lat + p.tailSamples();
+      std::vector<float> padded(static_cast<size_t>(paddedN), 0.0f);
+      for (int i = 0; i < n; ++i)
+        padded[static_cast<size_t>(i)] = in[i];
+      std::vector<float> raw(static_cast<size_t>(paddedN), 0.0f);
+      for (int off = 0; off < paddedN; off += 256)
+      {
+        const int m = (paddedN - off) < 256 ? (paddedN - off) : 256;
+        p.processBlock(padded.data() + off, raw.data() + off, m);
+      }
+      std::vector<float> out(static_cast<size_t>(n));
+      for (int i = 0; i < n; ++i)
+        out[static_cast<size_t>(i)] = raw[static_cast<size_t>(i + lat)];
+      return std::make_pair(out, p);
+    };
+    for (bool asym : {false, true})
+    {
+      const char* tag = asym ? "asym" : "sym";
+      auto off = renderTraced(false, asym);
+      auto on = renderTraced(true, asym);
+      char msg[128];
+      std::snprintf(msg, sizeof(msg), "wsola trace %s off-empty", tag);
+      TDM_CHECK(off.second.trace().empty(), msg);
+      std::snprintf(msg, sizeof(msg), "wsola trace %s non-intrusive", tag);
+      TDM_CHECK(off.first == on.first, msg);
+      const auto& tr = on.second.trace();
+      std::snprintf(msg, sizeof(msg), "wsola trace %s count", tag);
+      TDM_CHECK(static_cast<long long>(tr.size()) == on.second.telemetry().frames && !tr.empty(), msg);
+      bool sane = true, sawSearched = false, sawSilent = false;
+      const int dm = on.second.tolMinus(), dp = on.second.tolPlus();
+      for (size_t i = 0; i < tr.size(); ++i)
+      {
+        const auto& r = tr[i];
+        sane = sane && r.frame == static_cast<long long>(i);
+        sane = sane && r.best >= -dm && r.best <= dp;
+        sane = sane && r.prevDelta >= -dm && r.prevDelta <= dp;
+        sane = sane && r.topScore[0] >= r.topScore[1] && r.topScore[1] >= r.topScore[2];
+        sane = sane && r.selScore <= r.topScore[0] + 1e-12;
+        sane = sane && (!r.first || (r.frame == 0 && !r.searched));
+        sawSearched = sawSearched || r.searched;
+        sawSilent = sawSilent || !r.searched;
+      }
+      std::snprintf(msg, sizeof(msg), "wsola trace %s sane", tag);
+      TDM_CHECK(sane && sawSearched && sawSilent, msg);
+      // Landscape: size, range, consistency with last searched record.
+      std::vector<double> land = on.second.landscape();
+      bool lok = static_cast<int>(land.size()) == dm + dp + 1;
+      double lmax = -2.0;
+      for (double s : land)
+      {
+        lok = lok && (s == -2.0 || (s >= -1.0 - 1e-9 && s <= 1.0 + 1e-9));
+        lmax = std::max(lmax, s);
+      }
+      double wantMax = -2.0;
+      for (size_t i = tr.size(); i-- > 0;)
+        if (tr[i].searched)
+        {
+          wantMax = tr[i].topScore[0];
+          break;
+        }
+      std::snprintf(msg, sizeof(msg), "wsola trace %s landscape", tag);
+      TDM_CHECK(lok && lmax == wantMax, msg);
     }
   }
 }

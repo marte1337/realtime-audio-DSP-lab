@@ -16,13 +16,16 @@ static_assert(std::atomic<bool>::is_always_lock_free, "LabWsolaLive needs lock-f
 
 LabWsolaLive::LabWsolaLive() = default;
 
-void LabWsolaLive::prepare(double sampleRate, float shiftSt, bool startEnabled, int maxBlockFrames)
+void LabWsolaLive::prepare(double sampleRate, float shiftSt, bool startEnabled, int maxBlockFrames,
+                            double windowMs, int tolM, int tolP)
 {
   if (!(shiftSt >= kMinShiftSt && shiftSt <= kMaxShiftSt))
     throw std::invalid_argument("LabWsolaLive: shift must be in [-7, 0]");
   if (maxBlockFrames <= 0)
     throw std::invalid_argument("LabWsolaLive: maxBlockFrames must be positive");
-  shifter_.setConfig(kWindowMs); // throws only on logic error (pinned const)
+  shifter_.setConfig(windowMs); // throws on non-study window
+  if (tolM != 0 || tolP != 0)
+    shifter_.setSearch(tolM, tolP); // throws on half-default/negative
   shifter_.setEnabled(true); // permanently on: bypass lives in the wrapper
   shifter_.setShiftSt(shiftSt); // clamped by the shifter; range checked above
   shifter_.reset(sampleRate); // validates rate, allocates, clears state

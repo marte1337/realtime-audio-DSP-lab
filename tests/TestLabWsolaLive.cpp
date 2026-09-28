@@ -116,13 +116,33 @@ void runLabWsolaLiveTests()
       threw = true;
     }
     TDM_CHECK(threw, "labwsolalive reject bad rate");
+    threw = false;
+    try
+    {
+      w.prepare(sr, -2.0f, true, 2048, 25.0); // non-study window
+    }
+    catch (const std::invalid_argument&)
+    {
+      threw = true;
+    }
+    TDM_CHECK(threw, "labwsolalive reject bad windowMs");
+    threw = false;
+    try
+    {
+      w.prepare(sr, -2.0f, true, 2048, 20.0, 0, 320); // half-default search
+    }
+    catch (const std::invalid_argument&)
+    {
+      threw = true;
+    }
+    TDM_CHECK(threw, "labwsolalive reject half-default search");
     // Never-prepared processing is silence, never garbage/crash.
     std::vector<float> in(512, 0.5f), out(512, 9.0f);
     w.processBlock(in.data(), out.data(), 512);
     TDM_CHECK(tdm_test::peakAbs(out.data(), 512) == 0.0f, "labwsolalive never-prepared silence");
   }
   { // Latency reporting: wrapper exposes exactly the shifter latency
-    // (W + D + C) at every audition rate; both paths carry it.
+    // (W + Dp + C) at every audition rate; both paths carry it.
     for (double r : {44100.0, 48000.0, 96000.0})
       for (float st : {0.0f, -1.0f, -2.0f, -7.0f})
       {
@@ -137,6 +157,23 @@ void runLabWsolaLiveTests()
         std::snprintf(msg, sizeof(msg), "labwsolalive latency sr=%.0f st=%.0f", r, st);
         TDM_CHECK(w.latencySamples() == p.latencySamples(), msg);
       }
+    // Study geometry selection: latency-study winner (20:640:320) at
+    // the live audition shift reports exactly its shifter latency.
+    for (float st : {-1.0f, -2.0f, -7.0f})
+    {
+      tdm::lab::LabWsolaShift p;
+      p.setConfig(20.0);
+      p.setSearch(640, 320);
+      p.setEnabled(true);
+      p.setShiftSt(st);
+      p.reset(sr);
+      tdm::lab::LabWsolaLive w;
+      w.prepare(sr, st, true, 2048, 20.0, 640, 320);
+      char msg[128];
+      std::snprintf(msg, sizeof(msg), "labwsolalive study geometry latency st=%.0f", st);
+      TDM_CHECK(w.latencySamples() == p.latencySamples() && w.latencySamples() == (st == -7.0f ? 1284 : 1283),
+                msg);
+    }
   }
   { // Disabled steady-state == input delayed by exactly L (constant-
     // latency bypass); enabled steady-state == standalone shifter.

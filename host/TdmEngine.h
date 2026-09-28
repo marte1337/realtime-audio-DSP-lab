@@ -74,15 +74,24 @@ public:
   // One-line-per-device inventory for CLIs ("id=.. name=.. in=..Hz out=..Hz").
   static bool listDevices(std::string& out, std::string& error);
 
-  // LAB AUDITION: arm the W20 WSOLA pre-rig insert (control thread,
+  // LAB AUDITION: arm the WSOLA pre-rig insert (control thread,
   // pre-start; takes effect on start()). shiftSt must be one of
   // {0,-1,-2,-7}; anything else fails start() with a clean error.
   // Shift is fixed for the run: stop/change/start to change it.
-  void configureLabWsola(float shiftSt)
+  // Geometry defaults to the accepted W20 baseline; the latency-study
+  // geometries (windowMs + asymmetric tolM/tolP, (0,0) = symmetric)
+  // are selectable for audition. Invalid geometry fails start() cleanly.
+  void configureLabWsola(float shiftSt, double windowMs = 20.0, int tolM = 0, int tolP = 0)
   {
     labWsolaOn_ = true;
     labWsolaShift_ = shiftSt;
+    labWsolaWms_ = windowMs;
+    labWsolaTolM_ = tolM;
+    labWsolaTolP_ = tolP;
   }
+  double labWsolaWindowMs() const { return labWsolaWms_; }
+  int labWsolaTolM() const { return labWsolaTolM_; }
+  int labWsolaTolP() const { return labWsolaTolP_; }
   bool labWsolaConfigured() const { return labWsolaOn_; }
   // LAB AUDITION: live enable toggle (any thread while running; atomic
   // request, click-free ramp in the wrapper). No-op when stopped; the
@@ -126,6 +135,9 @@ private:
   // LAB AUDITION config (control thread, pre-start) + start() captures.
   bool labWsolaOn_ = false;
   float labWsolaShift_ = 0.0f;
+  double labWsolaWms_ = 20.0;
+  int labWsolaTolM_ = 0;
+  int labWsolaTolP_ = 0;
   bool labWsolaEnabled_ = true; // live-toggle mirror (start state: on)
   int inFrames_ = 0;
   int outFrames_ = 0;

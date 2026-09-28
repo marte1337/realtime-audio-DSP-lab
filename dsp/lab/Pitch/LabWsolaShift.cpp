@@ -2,6 +2,7 @@
 
 #include "dsp/lab/Pitch/LabWsolaShift.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -24,6 +25,9 @@ constexpr double kScoreEps = 1e-18; // correlation denominator guard
 // of range) and transients use 1e-6 (outright max): at the peg the max
 // is the skip-back (drift resumes after); closest-to-continuation there
 // would pin the edge forever (found by probe: permanent -D peg = dry).
+// Transient outright-max is floored at -(Lov-1) (see placeFrame): with
+// asymmetric Dm > Lov the unfloored max prefers attack-excluding
+// sustain windows and deletes pick transients (measured, -1 chugs).
 constexpr double kTieEps = 1e-3;
 constexpr double kTieEpsTransient = 1e-6;
 constexpr double kFluxRise = 6.0; // HP-energy rise vs trailing average
@@ -42,9 +46,19 @@ LabWsolaShift::LabWsolaShift() = default;
 
 void LabWsolaShift::setConfig(double windowMs)
 {
-  if (windowMs != 20.0 && windowMs != 30.0 && windowMs != 40.0)
-    throw std::invalid_argument("LabWsolaShift: windowMs must be one of {20.0, 30.0, 40.0}");
+  if (windowMs != 14.0 && windowMs != 16.0 && windowMs != 20.0 && windowMs != 30.0 && windowMs != 40.0)
+    throw std::invalid_argument("LabWsolaShift: windowMs must be one of {14.0, 16.0, 20.0, 30.0, 40.0}");
   windowMs_ = windowMs;
+}
+
+void LabWsolaShift::setSearch(int tolMinus, int tolPlus)
+{
+  if ((tolMinus == 0) != (tolPlus == 0))
+    throw std::invalid_argument("LabWsolaShift: setSearch takes (0, 0) for default or two positive values");
+  if (tolMinus < 0 || tolPlus < 0)
+    throw std::invalid_argument("LabWsolaShift: setSearch tolerances must be non-negative");
+  wantTolMinus_ = tolMinus;
+  wantTolPlus_ = tolPlus;
 }
 
 void LabWsolaShift::reset(double sampleRate)
@@ -58,15 +72,27 @@ void LabWsolaShift::reset(double sampleRate)
   if (frameLen_ < 64)
     frameLen_ = 64; // unreachable at >= 8 kHz, kept as a guard
   hopA_ = frameLen_ / 2; // 50% nominal analysis overlap
-  // Symmetric search tolerance W/2 (NOT W/4): the search SPAN (2D) must
-  // cover a strong period of the lowest content for skip-back coherence
-  // (probed span rule: span < fund-period pins the time map (dry) or
-  // mushes jumps (warble) - low-B fund needs 778 samples @48k, so W/4
-  // (span 480/720) fails low-B at wms20/30 while W/2 (span = W) clears
-  // it. Costs latency (L = W+D+C = 1.5W+C: 30/45/60 ms) and hidden lag
-  // (<= D); wms40 thus loses to PV-D on latency (report positioning:
-  // wms40-vs-A on LF quality, wms20/30-vs-D on latency).
-  tol_ = frameLen_ / 2;
+  // Search tolerance: symmetric W/2 by default (the accepted baseline:
+  // search SPAN 2D = W covers a strong period of the lowest content for
+  // skip-back coherence - probed span rule, low-B fund needs 778
+  // samples @48k, so W/4 (span 480/720) fails low-B at wms20/30 while
+  // W/2 (span = W) clears it). The latency study may request asymmetric
+  // (Dm, Dp): only Dp reaches into the future, so latency is W+Dp+C
+  // while span Dm+Dp keeps the low-string coherence (re-probed, not
+  // assumed - see the latency study report). Bounds [1, W] keep the
+  // search inside the frame pair the rings are sized for.
+  if (wantTolMinus_ == 0 && wantTolPlus_ == 0)
+  {
+    tolMinus_ = frameLen_ / 2;
+    tolPlus_ = frameLen_ / 2;
+  }
+  else
+  {
+    if (wantTolMinus_ < 1 || wantTolMinus_ > frameLen_ || wantTolPlus_ < 1 || wantTolPlus_ > frameLen_)
+      throw std::invalid_argument("LabWsolaShift: search tolerances must be in [1, W]");
+    tolMinus_ = wantTolMinus_;
+    tolPlus_ = wantTolPlus_;
+  }
   const double ratio = std::exp2(static_cast<double>(shiftSt_) / 12.0);
   hopS_ = static_cast<int>(ratio * hopA_ + 0.5);
   if (hopS_ < 1)
@@ -76,30 +102,36 @@ void LabWsolaShift::reset(double sampleRate)
   actualRatio_ = static_cast<double>(hopS_) / hopA_;
   overlap_ = frameLen_ - hopS_; // Lov >= W/2 always (Hs <= Ha <= W/2)
 
-  // Latency: W (frame fill) + D (symmetric search lookahead) + C.
+  // Latency: W (frame fill) + Dp (search lookahead: the +Dp candidate
+  // reaches Dp past the nominal frame end, so frame 0 places once input
+  // [0, W+Dp) has arrived; the -Dm side reads history already in the
+  // ring and costs nothing) + C.
   // Pops are HELD until tick L (see processBlock), so the FIFO prefills
   // and output o emits at exactly tick o+L. Starvation-free by proof:
   // output o needs compressed through floor(o*ar)+2, produced by frame
-  // j* with (j*+1)*Hs > floor(o*ar)+2, placed at tick j**Ha+D+W-1 <=
-  // o+3/ar+D+W-1; holding pops to o+W+D+C never starves iff
+  // j* with (j*+1)*Hs > floor(o*ar)+2, placed at tick j**Ha+Dp+W-1 <=
+  // o+3/ar+Dp+W-1; holding pops to o+W+Dp+C never starves iff
   // C >= 3/ar-1, and C = ceil(3/ar-1) is the smallest integer that does.
-  // (An earlier C = ceil(2/ar)+2 with no hold starved intermittently at
-  // -24 - caught by onset probe, fixed by construction, pinned by the
-  // grid-wide DC starvation test.) NOTE L is NOT an onset-alignment
-  // claim: input at sub-frame offset j0 legitimately lands j0*(1/ar-1)
-  // late in the output (the slow read stretches within-frame positions;
-  // the correlation search usually but not always compensates).
-  // Transient placement slop up to ~W*(1/ar-1) is inherent WSOLA
-  // behavior, measured honestly in analysis, never tuned into L.
+  // The proof reads Dp wherever the placement schedule does, so it
+  // covers asymmetric search unchanged. (An earlier C = ceil(2/ar)+2
+  // with no hold starved intermittently at -24 - caught by onset probe,
+  // fixed by construction, pinned by the grid-wide DC starvation test.)
+  // NOTE L is NOT an onset-alignment claim: input at sub-frame offset
+  // j0 legitimately lands j0*(1/ar-1) late in the output (the slow read
+  // stretches within-frame positions; the correlation search usually
+  // but not always compensates). Transient placement slop up to
+  // ~W*(1/ar-1) is inherent WSOLA behavior, measured honestly in
+  // analysis, never tuned into L.
   const int c = static_cast<int>(std::ceil(3.0 / actualRatio_ - 1.0));
-  latency_ = bypass0_ ? 0 : frameLen_ + tol_ + c;
+  latency_ = bypass0_ ? 0 : frameLen_ + tolPlus_ + c;
   tail_ = frameLen_ + hopA_; // conservative flush (verified by tail test)
 
-  scoreBuf_.assign(static_cast<size_t>(2 * tol_ + 1), -2.0);
+  scoreBuf_.assign(static_cast<size_t>(tolMinus_ + tolPlus_ + 1), -2.0);
   prevDelta_ = 0;
   fluxTrail_ = 0.0;
   framesPlaced_ = 0;
   telemetry_ = Telemetry{};
+  trace_.clear(); // buffer cleared; the armed flag survives reset
   fadeUp_.assign(static_cast<size_t>(overlap_), 0.0f);
   fadeDown_.assign(static_cast<size_t>(overlap_), 0.0f);
   for (int j = 0; j < overlap_; ++j)
@@ -110,10 +142,10 @@ void LabWsolaShift::reset(double sampleRate)
     fadeDown_[static_cast<size_t>(j)] = static_cast<float>(1.0 - s * s);
   }
 
-  inRing_.assign(static_cast<size_t>(ceilPow2(2 * tol_ + frameLen_ + hopA_ + 16)), 0.0f);
+  inRing_.assign(static_cast<size_t>(ceilPow2(tolMinus_ + tolPlus_ + frameLen_ + hopA_ + 16)), 0.0f);
   inMask_ = static_cast<int>(inRing_.size()) - 1;
   inCount_ = 0;
-  nextFrameAt_ = tol_ + frameLen_; // frame 0 places once its span arrives
+  nextFrameAt_ = tolPlus_ + frameLen_; // frame 0 places once its span arrives
 
   outAcc_.assign(static_cast<size_t>(ceilPow2(2 * frameLen_ + 16)), 0.0f);
   outMask_ = static_cast<int>(outAcc_.size()) - 1;
@@ -144,6 +176,17 @@ void LabWsolaShift::setShiftSt(float semitones)
 void LabWsolaShift::setEnabled(bool enabled)
 {
   enabled_ = enabled;
+}
+
+void LabWsolaShift::enableTrace(bool on)
+{
+  traceOn_ = on;
+  trace_.clear();
+}
+
+std::vector<double> LabWsolaShift::landscape() const
+{
+  return scoreBuf_;
 }
 
 float LabWsolaShift::compressedAt(long long pos) const
@@ -200,7 +243,27 @@ void LabWsolaShift::placeFrame()
   if (!isTransient || seedTrail)
     fluxTrail_ += kFluxTrailRate * (hpE - fluxTrail_);
 
+  // Transient search floor (latency-study fix): attack frames take the
+  // outright max, and against a sustain tail the outright max prefers
+  // windows that EXCLUDE the attack (pure sustain correlates ~1.0,
+  // attack content does not) - so with Dm > Lov the attack frame jumps
+  // back to a sustain lag, repeats sustain over the attack, and the
+  // pick transient is deleted when the map jumps forward again
+  // (measured: full-span-960 configs ate chug pick attacks at -1 while
+  // Dm <= Lov configs rendered them bit-identically to the baseline).
+  // Clamping transient frames to d >= -(Lov-1) keeps windows overlapping
+  // the frame start, so the backward jump - and the sustain repeat - is
+  // bounded by the correlation length instead of the search span.
+  // Provable no-op for symmetric search (Dm = W/2 <= Lov always, since
+  // Hs <= Ha): the accepted baseline renders bit-identically with or
+  // without this clamp. Pegged-but-not-transient frames (skip-backs in
+  // sustain) keep the full span - the landing range IS the span rule.
+  const long long transLo = (isTransient && tolMinus_ > lov - 1) ? -(lov - 1) : -tolMinus_;
+
   long long best = 0;
+  long long cont = 0;
+  bool pegged = false, searched = false;
+  double bestScore = -2.0;
   if (!firstFrame_)
   {
     // Target: the CURRENT overlap-region content [olaPos, olaPos+Lov) -
@@ -218,28 +281,39 @@ void LabWsolaShift::placeFrame()
     }
     if (tailE >= kSilenceEnergy)
     {
-      // Pass 1: normalized cross-correlation over the symmetric
-      // tolerance, 0-outward (0, -1, +1, ...) into scoreBuf_.
-      double bestScore = -2.0;
-      for (long long step = 0; step <= 2 * tol_; ++step)
-      {
-        const long long m = (step + 1) / 2;
-        const long long d = (step == 0) ? 0 : ((step & 1) ? -m : m);
-        double num = 0.0, candE = 0.0;
-        for (int j = 0; j < lov; ++j)
+      // Pass 1: normalized cross-correlation over [-Dm, +Dp], 0-outward
+      // (0, -1, +1, -2, +2, ..., skipping whichever side exhausts first)
+      // into scoreBuf_. Symmetric Dm == Dp visits lags in exactly the
+      // baseline order, so the default config renders bit-identically.
+      // Pre-fill: unvisited lags (transient floor) read -2.0 instead of
+      // a stale frame's scores. Behavior-neutral (pass 2 only reads
+      // visited lags) and keeps landscape()/trace honest.
+      searched = true;
+      std::fill(scoreBuf_.begin(), scoreBuf_.end(), -2.0);
+      const long long maxM = tolMinus_ > tolPlus_ ? tolMinus_ : tolPlus_;
+      for (long long m = 0; m <= maxM; ++m)
+        for (int side = 0; side < 2; ++side)
         {
-          const long long ip = nominal + d + j;
-          const float c =
-              (ip < 0 || ip >= inCount_) ? 0.0f : inRing_[static_cast<size_t>(ip & inMask_)];
-          const float t = outAcc_[static_cast<size_t>((olaPos_ + j) & outMask_)];
-          num += static_cast<double>(c) * t;
-          candE += static_cast<double>(c) * c;
+          if (m == 0 && side == 1)
+            continue; // d = 0 visited once
+          const long long d = (side == 0) ? -m : m;
+          if (d < transLo || d > tolPlus_)
+            continue;
+          double num = 0.0, candE = 0.0;
+          for (int j = 0; j < lov; ++j)
+          {
+            const long long ip = nominal + d + j;
+            const float c =
+                (ip < 0 || ip >= inCount_) ? 0.0f : inRing_[static_cast<size_t>(ip & inMask_)];
+            const float t = outAcc_[static_cast<size_t>((olaPos_ + j) & outMask_)];
+            num += static_cast<double>(c) * t;
+            candE += static_cast<double>(c) * c;
+          }
+          const double score = num / std::sqrt(candE * tailE + kScoreEps);
+          scoreBuf_[static_cast<size_t>(d + tolMinus_)] = score;
+          if (score > bestScore)
+            bestScore = score;
         }
-        const double score = num / std::sqrt(candE * tailE + kScoreEps);
-        scoreBuf_[static_cast<size_t>(d + tol_)] = score;
-        if (score > bestScore)
-          bestScore = score;
-      }
       // Pass 2: drift-seeking tie-break with transient guard. Among
       // lags within the tie band of the max, take the one closest to
       // exact continuation (drift step -(Ha-Hs)): frame advance Hs makes
@@ -248,37 +322,76 @@ void LabWsolaShift::placeFrame()
       // dry. Continuation always scores ~1.0 (it IS the target samples),
       // so argmax drifts unaided - the tie-break only keeps periodic
       // ties drifting instead of center-pinning (pin = dry, the -1
-      // collapse). At the -D peg the score slides off and the max jumps
+      // collapse). At the -Dm peg the score slides off and the max jumps
       // back to a high-score lag (aligned skip-back); drift+jump cycles
       // are textbook WSOLA pitch shifting. Transients use the 1e-6 band
       // (outright max: attacks align, never smear through drift).
       // Strict < keeps the first on exact distance ties: deterministic.
-      const long long cont = prevDelta_ - (hopA_ - hopS_);
-      // Peg rule: cont can only exit below -D (drift step >= 0 for
-      // downshift, so cont <= prevDelta <= +D always). When pegged the
-      // drift run is over and closest-to-continuation would pin the -D
-      // edge whenever it scores within the band (a stuck peg pins dry -
+      cont = prevDelta_ - (hopA_ - hopS_);
+      // Peg rule: cont can only exit below -Dm (drift step Ha-Hs >= 0
+      // for downshift, so cont <= prevDelta <= +Dp always - no upper
+      // peg exists, symmetric or asymmetric). When pegged the drift run
+      // is over and closest-to-continuation would pin the -Dm edge
+      // whenever it scores within the band (a stuck peg pins dry -
       // found by probe); instead take the outright max like a transient
       // (the skip-back; drift resumes from the landing).
-      const bool pegged = (cont < -tol_);
+      pegged = (cont < -tolMinus_);
       const double tieEps = (isTransient || pegged) ? kTieEpsTransient : kTieEps;
       double bestDist = 1e300;
-      for (long long step = 0; step <= 2 * tol_; ++step)
-      {
-        const long long m = (step + 1) / 2;
-        const long long d = (step == 0) ? 0 : ((step & 1) ? -m : m);
-        if (scoreBuf_[static_cast<size_t>(d + tol_)] < bestScore - tieEps)
-          continue;
-        const double dist =
-            static_cast<double>((d > cont) ? (d - cont) : (cont - d));
-        if (dist < bestDist)
+      for (long long m = 0; m <= maxM; ++m)
+        for (int side = 0; side < 2; ++side)
         {
-          bestDist = dist;
-          best = d;
+          if (m == 0 && side == 1)
+            continue;
+          const long long d = (side == 0) ? -m : m;
+          if (d < transLo || d > tolPlus_)
+            continue;
+          if (scoreBuf_[static_cast<size_t>(d + tolMinus_)] < bestScore - tieEps)
+            continue;
+          const double dist = static_cast<double>((d > cont) ? (d - cont) : (cont - d));
+          if (dist < bestDist)
+          {
+            bestDist = dist;
+            best = d;
+          }
         }
-      }
     }
     // else: silent tail - keep nominal (best = 0), no garbage alignment.
+  }
+  if (traceOn_)
+  {
+    FrameTrace r;
+    r.frame = framesPlaced_;
+    r.nominal = nominal;
+    r.best = best;
+    r.cont = cont;
+    r.prevDelta = prevDelta_;
+    r.isTransient = isTransient;
+    r.pegged = pegged;
+    r.first = firstFrame_;
+    r.searched = searched;
+    if (searched)
+    {
+      // Top-3 over ascending lag (strict > : deterministic ties).
+      for (long long d = -tolMinus_; d <= tolPlus_; ++d)
+      {
+        const double s = scoreBuf_[static_cast<size_t>(d + tolMinus_)];
+        for (int t = 0; t < 3; ++t)
+          if (s > r.topScore[t])
+          {
+            for (int u = 2; u > t; --u)
+            {
+              r.topScore[u] = r.topScore[u - 1];
+              r.topLag[u] = r.topLag[u - 1];
+            }
+            r.topScore[t] = s;
+            r.topLag[t] = d;
+            break;
+          }
+      }
+      r.selScore = scoreBuf_[static_cast<size_t>(best + tolMinus_)];
+    }
+    trace_.push_back(r);
   }
   firstFrame_ = false;
   const long long churn =

@@ -14,7 +14,10 @@
 //              [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]
 //              [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]
 //              [--output-trim db]
-//              [--lab-wsola 0|-1|-2|-7]   (LAB AUDITION: W20 WSOLA pre-rig insert)
+//              [--lab-wsola 0|-1|-2|-7]   (LAB AUDITION: WSOLA pre-rig insert)
+//              [--lab-wsola-cfg WMS:TOLM:TOLP] (LAB AUDITION: shifter geometry;
+//                                            default 20:0:0 = accepted baseline;
+//                                            e.g. 20:640:320 latency-study geometry)
 //              [--buffer N]              (request CoreAudio buffer frames)
 //   tdm_live --list            (show audio devices and exit)
 //
@@ -52,6 +55,7 @@ int main(int argc, char** argv)
   std::string tight, drive, bite, weight, contour, presence, outputTrim;
   std::string delayTime, delayFb, delayMix, reverbDecay, reverbMix;
   std::string labWsola;
+  std::string labWsolaCfg;
   std::string buffer;
   bool driveEnable = false, shapeEnable = false, delayEnable = false, reverbEnable = false;
   for (int i = 1; i < argc; ++i)
@@ -92,7 +96,7 @@ int main(int argc, char** argv)
          || a == "--tight" || a == "--drive" || a == "--bite" || a == "--weight" || a == "--contour"
          || a == "--presence" || a == "--delay-time" || a == "--delay-fb" || a == "--delay-mix"
          || a == "--reverb-decay" || a == "--reverb-mix" || a == "--output-trim" || a == "--lab-wsola"
-         || a == "--buffer")
+         || a == "--lab-wsola-cfg" || a == "--buffer")
         && i + 1 < argc)
     {
       if (a == "--nam")
@@ -129,6 +133,8 @@ int main(int argc, char** argv)
         reverbMix = argv[++i];
       else if (a == "--lab-wsola")
         labWsola = argv[++i];
+      else if (a == "--lab-wsola-cfg")
+        labWsolaCfg = argv[++i];
       else if (a == "--buffer")
         buffer = argv[++i];
       else
@@ -140,7 +146,8 @@ int main(int argc, char** argv)
                 "       [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]\n"
                 "       [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]\n"
                 "       [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]\n"
-                "       [--output-trim db] [--lab-wsola 0|-1|-2|-7] [--buffer N] | --list\n");
+                "       [--output-trim db] [--lab-wsola 0|-1|-2|-7] [--lab-wsola-cfg WMS:TOLM:TOLP]\n"
+                "       [--buffer N] | --list\n");
     return 2;
   }
 
@@ -199,6 +206,11 @@ int main(int argc, char** argv)
     if (!outputTrim.empty())
       params.outputTrimDb = std::stof(outputTrim);
     engine.rig().setParams(params);
+    if (!labWsolaCfg.empty() && labWsola.empty())
+    {
+      std::printf("tdm_live: error: --lab-wsola-cfg needs --lab-wsola\n");
+      return 2;
+    }
     if (!labWsola.empty())
     {
       const float st = std::stof(labWsola);
@@ -207,7 +219,30 @@ int main(int argc, char** argv)
         std::printf("tdm_live: error: --lab-wsola must be one of 0|-1|-2|-7\n");
         return 2;
       }
-      engine.configureLabWsola(st);
+      double wms = 20.0;
+      int tolm = 0, tolp = 0;
+      if (!labWsolaCfg.empty())
+      {
+        const size_t c1 = labWsolaCfg.find(':');
+        const size_t c2 = labWsolaCfg.find(':', c1 == std::string::npos ? 0 : c1 + 1);
+        if (c1 == std::string::npos || c2 == std::string::npos)
+        {
+          std::printf("tdm_live: error: --lab-wsola-cfg must be WMS:TOLM:TOLP in samples\n");
+          return 2;
+        }
+        try
+        {
+          wms = std::stod(labWsolaCfg.substr(0, c1));
+          tolm = std::stoi(labWsolaCfg.substr(c1 + 1, c2 - c1 - 1));
+          tolp = std::stoi(labWsolaCfg.substr(c2 + 1));
+        }
+        catch (...)
+        {
+          std::printf("tdm_live: error: --lab-wsola-cfg must be WMS:TOLM:TOLP in samples\n");
+          return 2;
+        }
+      }
+      engine.configureLabWsola(st, wms, tolm, tolp);
     }
     if (!buffer.empty())
     {
@@ -276,7 +311,9 @@ int main(int argc, char** argv)
                       .c_str());
       std::printf("audio: out-device='%s'\n", engine.outputDeviceName().c_str());
       if (engine.labWsolaConfigured())
-        std::printf("lab-wsola: W20 shift=%.0f st ENABLED (chain: input -> wsola -> rig -> output)\n",
+        std::printf("lab-wsola: W%.0f Dm=%d Dp=%d shift=%.0f st ENABLED (chain: input -> wsola -> rig -> "
+                    "output)\n",
+                    engine.labWsolaWindowMs(), engine.labWsolaTolM(), engine.labWsolaTolP(),
                     std::stof(labWsola));
       std::printf("latency: device=%.1fms wsola=%.1fms ring-slack~0-%.1fms => total ~%.1f-%.1fms (uncompensated)\n",
                   devMs, wsolaMs, slackMs, devMs + wsolaMs, devMs + wsolaMs + slackMs);

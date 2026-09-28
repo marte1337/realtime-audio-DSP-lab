@@ -14,7 +14,10 @@
 //   effect via reset; changing shift live would need reset (allocation +
 //   state flush) so the audition requires stop/change/start instead.
 //
-// Config is pinned to the study winner: 20 ms window. Shift must be in
+// Config defaults to the accepted baseline: 20 ms window, symmetric
+// W/2 search. The latency-study geometries (window + asymmetric search)
+// are selectable via prepare() for audition; anything the shifter
+// rejects fails prepare() with std::invalid_argument. Shift must be in
 // [-7, 0]; 0 selects the shifter's exact zero-latency bypass (L = 0, the
 // wrapper degenerates to a wire). Rates 8000..192000 (device rate).
 //
@@ -45,14 +48,17 @@ public:
 
   LabWsolaLive();
 
-  // Off-RT: validates shift/rate/block (throws std::invalid_argument),
-  // resets the shifter (permanently enabled from here on - bypass is the
-  // wrapper's latency-matched dry path, never the shifter's hard
-  // switch), sizes the dry delay, parks the ramp at the start state.
-  // maxBlockFrames bounds processBlock calls (the engine chunks by its
-  // maxBlock); larger blocks would alias the delay ring. Deterministic:
+  // Off-RT: validates shift/rate/block/geometry (throws
+  // std::invalid_argument), resets the shifter (permanently enabled from
+  // here on - bypass is the wrapper's latency-matched dry path, never
+  // the shifter's hard switch), sizes the dry delay, parks the ramp at
+  // the start state. maxBlockFrames bounds processBlock calls (the
+  // engine chunks by its maxBlock); larger blocks would alias the delay
+  // ring. windowMs/tolM/tolP select the shifter geometry (0,0 = default
+  // symmetric); defaults reproduce the accepted baseline. Deterministic:
   // same args => same state.
-  void prepare(double sampleRate, float shiftSt, bool startEnabled, int maxBlockFrames);
+  void prepare(double sampleRate, float shiftSt, bool startEnabled, int maxBlockFrames,
+               double windowMs = kWindowMs, int tolM = 0, int tolP = 0);
 
   // Any-thread live toggle request (atomic; applied on the audio thread
   // at the next processBlock, then ramped over kRampSamples).

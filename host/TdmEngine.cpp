@@ -413,8 +413,9 @@ bool TdmEngine::start(std::string& error)
     rig_.reset(outSr, h->maxBlock);
     if (labWsolaOn_)
     {
-      // LAB AUDITION: throws (bad shift/rate) inside the try => clean error.
-      h->wsola.prepare(outSr, labWsolaShift_, true, h->maxBlock);
+      // LAB AUDITION: throws (bad shift/rate/geometry) inside try => clean error.
+      h->wsola.prepare(outSr, labWsolaShift_, true, h->maxBlock, labWsolaWms_, labWsolaTolM_,
+                       labWsolaTolP_);
       h->wsolaOn = true;
       labWsolaEnabled_ = true;
     }

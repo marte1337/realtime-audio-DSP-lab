@@ -44,7 +44,7 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(patsubst %.mm,$(BUILD)/%.o,$(DEV_SRCS))
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLive.cpp tests/TestHostBuffer.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestHostBuffer.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 # Lab pitch prototype: standalone offline tool, deliberately NOT linked into
@@ -102,6 +102,18 @@ $(BUILD)/tdm_labpitch: $(LABPITCH_OBJS) $(BUILD)/dsp/WavFile.o
 	$(CXX) $(STD) $^ -o $@
 
 labpitch: $(BUILD)/tdm_labpitch
+
+# WSOLA latency study: measurement harness (lab only, not in `all`).
+$(BUILD)/tdm_wsola_study: $(BUILD)/dsp/lab/Pitch/LabWsolaStudy.o $(LABWSOLA_OBJ) $(BUILD)/dsp/WavFile.o
+	$(CXX) $(STD) $^ -o $@
+
+wsola-study: $(BUILD)/tdm_wsola_study
+
+# WSOLA wobble investigation: trajectory instrument (lab only, not in `all`).
+$(BUILD)/tdm_wsola_traj: $(BUILD)/dsp/lab/Pitch/LabWsolaTraj.o $(LABWSOLA_OBJ) $(BUILD)/dsp/WavFile.o
+	$(CXX) $(STD) $^ -o $@
+
+wsola-traj: $(BUILD)/tdm_wsola_traj
 
 test: $(BUILD)/tdm_tests
 	./$(BUILD)/tdm_tests
