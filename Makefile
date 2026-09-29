@@ -44,14 +44,14 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(patsubst %.mm,$(BUILD)/%.o,$(DEV_SRCS))
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestHostBuffer.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestHostBuffer.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 # Lab pitch prototype: standalone offline tool, deliberately NOT linked into
 # the rig, tests of the rig, or the dev app. Shares only WavFile + LabFft.
-LABPITCH_SRCS := dsp/lab/Pitch/LabFft.cpp dsp/lab/Pitch/LabPitchShift.cpp dsp/lab/Pitch/LabCrossover.cpp dsp/lab/Pitch/LabMultiPitch.cpp dsp/lab/Pitch/LabWsolaShift.cpp dsp/lab/Pitch/LabPitchRender.cpp
+LABPITCH_SRCS := dsp/lab/Pitch/LabFft.cpp dsp/lab/Pitch/LabPitchShift.cpp dsp/lab/Pitch/LabCrossover.cpp dsp/lab/Pitch/LabMultiPitch.cpp dsp/lab/Pitch/LabWsolaShift.cpp dsp/lab/Pitch/LabPitchV2.cpp dsp/lab/Pitch/LabPitchRender.cpp
 LABPITCH_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(LABPITCH_SRCS))
-LABPITCH_LIB := $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/lab/Pitch/LabPitchShift.o $(BUILD)/dsp/lab/Pitch/LabCrossover.o $(BUILD)/dsp/lab/Pitch/LabMultiPitch.o $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o
+LABPITCH_LIB := $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/lab/Pitch/LabPitchShift.o $(BUILD)/dsp/lab/Pitch/LabCrossover.o $(BUILD)/dsp/lab/Pitch/LabMultiPitch.o $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o $(BUILD)/dsp/lab/Pitch/LabPitchV2.o
 
 # LAB AUDITION wrapper (temporary): linked into the live/dev hosts (which own
 # the TdmEngine insert) and the tests. NOT linked into the rig or tdm_render.
@@ -114,6 +114,12 @@ $(BUILD)/tdm_wsola_traj: $(BUILD)/dsp/lab/Pitch/LabWsolaTraj.o $(LABWSOLA_OBJ) $
 	$(CXX) $(STD) $^ -o $@
 
 wsola-traj: $(BUILD)/tdm_wsola_traj
+
+# PV-D v2 A/B/C/D comparison harness (lab only, not in `all`).
+$(BUILD)/tdm_pv2_study: $(BUILD)/dsp/lab/Pitch/LabPV2Study.o $(BUILD)/dsp/lab/Pitch/LabPitchV2.o $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/WavFile.o
+	$(CXX) $(STD) $^ -o $@
+
+pv2-study: $(BUILD)/tdm_pv2_study
 
 test: $(BUILD)/tdm_tests
 	./$(BUILD)/tdm_tests

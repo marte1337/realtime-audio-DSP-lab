@@ -17,6 +17,7 @@ void runToneShapeTests();
 void runSpaceTests();
 void runOutputTrimTests();
 void runLabPitchTests();
+void runLabPV2Tests();
 void runLabMultiTests();
 void runLabWsolaTests();
 void runLabWsolaLatencyTests();
@@ -59,6 +60,7 @@ int main()
   runSuite("space", runSpaceTests);
   runSuite("outtrim", runOutputTrimTests);
   runSuite("labpitch", runLabPitchTests);
+  runSuite("labpv2", runLabPV2Tests);
   runSuite("labmulti", runLabMultiTests);
   runSuite("labwsola", runLabWsolaTests);
   runSuite("labwsolalatency", runLabWsolaLatencyTests);
