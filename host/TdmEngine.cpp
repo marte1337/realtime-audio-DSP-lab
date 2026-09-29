@@ -17,6 +17,10 @@
 #include <vector>
 
 #include "dsp/lab/Pitch/LabWsolaLive.h" // LAB AUDITION only (cpp-local)
+#ifdef TDM_BENCH_LIVE
+#include "dsp/lab/bench/BenchRubberBand.h" // BENCH AUDITION only (cpp-local)
+#include "dsp/lab/bench/BenchShifter.h"
+#endif
 #include "host/BufferRequest.h" // pure request validation (no HAL here)
 
 // Private HAL access for the IO procs (lets the public header stay free of
@@ -178,6 +182,10 @@ struct TdmEngine::Hal
   std::vector<float> outScratchR; // rig channel 1 when stereo
   tdm::lab::LabWsolaLive wsola; // LAB AUDITION: pre-rig insert, output thread only
   bool wsolaOn = false; // armed at start(), immutable while running
+#ifdef TDM_BENCH_LIVE
+  std::unique_ptr<tdm::bench::BenchShifter> bench; // BENCH AUDITION: pre-rig, output thread only
+  bool benchOn = false; // armed at start(), immutable while running
+#endif
   int inChannels = 0;
   bool inInterleaved = false;
   int outChannels = 0;
@@ -268,6 +276,10 @@ OSStatus TdmEngineAudio::outputProc(AudioDeviceID, const AudioTimeStamp*, const 
     // LAB AUDITION (not production): W20 WSOLA pre-rig insert, in place.
     if (h->wsolaOn)
       h->wsola.processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
+#ifdef TDM_BENCH_LIVE
+    if (h->benchOn)
+      h->bench->processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
+#endif
     // Space made the rig stereo-capable: one device channel renders the
     // mono fold-down, two or more get the L/R pair (extra channels cycle).
     const int wantStereo = (h->outChannels >= 2) ? 2 : 1;
@@ -419,6 +431,24 @@ bool TdmEngine::start(std::string& error)
       h->wsolaOn = true;
       labWsolaEnabled_ = true;
     }
+#ifdef TDM_BENCH_LIVE
+    if (labBenchOn_)
+    {
+      // BENCH AUDITION: id whitelist keeps the binary's audition surface
+      // to the nominated config only; construct/prepare/reset inside try
+      // => clean error, like the wsola arm above. Shift is set before
+      // reset() per the BenchShifter contract.
+      if (labBenchId_ != "rb2")
+        throw std::runtime_error("unknown bench audition id \"" + labBenchId_
+                                 + "\" (supported: \"rb2\")");
+      h->bench = std::make_unique<tdm::bench::BenchRubberBand>(
+          tdm::bench::BenchRubberBand::Mode::R2Realtime);
+      h->bench->setShiftSemitones(static_cast<double>(labBenchShift_));
+      h->bench->prepare(static_cast<double>(outSr), h->maxBlock);
+      h->bench->reset();
+      h->benchOn = true;
+    }
+#endif
     // A rate change in Audio MIDI Setup between load and start must fail
     // loudly: there is no resampler, and a stale asset would play wrong.
     if (rig_.hasNam())
@@ -549,6 +579,15 @@ int TdmEngine::labWsolaLatency() const
     return 0;
   return hal_->wsola.latencySamples();
 }
+
+#ifdef TDM_BENCH_LIVE
+int TdmEngine::labBenchLatency() const
+{
+  if (!hal_ || !hal_->benchOn || !hal_->bench)
+    return 0;
+  return hal_->bench->latencySamples();
+}
+#endif
 
 bool TdmEngine::listDevices(std::string& out, std::string& error)
 {

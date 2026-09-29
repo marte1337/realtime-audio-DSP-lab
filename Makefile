@@ -63,8 +63,27 @@ LABWSOLA_OBJ := $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o
 
 FRAMEWORKS := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
 DEV_FRAMEWORKS := $(FRAMEWORKS) -framework Cocoa -framework UniformTypeIdentifiers
+BENCH_FRAMEWORKS := -framework Accelerate
 
-.PHONY: all test smoke clean check-deps
+# External benchmark dependencies (RESEARCH/BENCHMARK ONLY - never product).
+# Rubber Band 4.0.0 (GPL-2+), SoundTouch 2.4.1 (LGPL-2.1), Signalsmith
+# Stretch 1.4.0 + linear 0.6.4 (MIT). Used read-only from OUTSIDE this repo
+# (TDM_BENCH_DEPS, override on the command line). Nothing under
+# TDM_BENCH_DEPS is copied into TechDeathMachine source; only our own
+# shims in dsp/lab/bench/ live here. Bench binaries are lab-only and NOT
+# part of `all` (linking GPL code stays an explicit local act).
+TDM_BENCH_DEPS ?= /tmp/tdm-pitch-study
+BENCH_INCS := -I$(TDM_BENCH_DEPS)/rubberband -I$(TDM_BENCH_DEPS)/soundtouch/include -I$(TDM_BENCH_DEPS)/signalsmith-stretch -I$(TDM_BENCH_DEPS)/linear/include
+BENCH_SRCS := dsp/lab/bench/BenchRubberBand.cpp dsp/lab/bench/BenchSoundTouch.cpp dsp/lab/bench/BenchSignalsmith.cpp
+BENCH_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(BENCH_SRCS))
+# SoundTouch arm64-safe subset (x86-only mmx/sse + unused BPMDetect left out;
+# cpu_detect is preprocessor-guarded to near-empty off x86).
+ST_SRCS := SoundTouch.cpp TDStretch.cpp RateTransposer.cpp FIFOSampleBuffer.cpp AAFilter.cpp FIRFilter.cpp InterpolateCubic.cpp InterpolateLinear.cpp InterpolateShannon.cpp PeakFinder.cpp cpu_detect_x86.cpp
+ST_OBJS := $(addprefix $(BUILD)/bench/st/,$(ST_SRCS:.cpp=.o))
+RB_SINGLE_OBJ := $(BUILD)/bench/RubberBandSingle.o
+BENCH_EXT_OBJS := $(RB_SINGLE_OBJ) $(ST_OBJS)
+
+.PHONY: all test smoke clean check-deps check-bench-deps
 all: check-deps $(BUILD)/tdm_tests $(BUILD)/tdm_render $(BUILD)/tdm_live $(BUILD)/tdm_dev
 
 check-deps:
@@ -83,6 +102,25 @@ $(BUILD)/%.o: %.cpp
 $(BUILD)/%.o: %.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(TDM_FLAGS) -fobjc-arc -c $< -o $@
+
+# Bench shims (our code, strict warnings) + external objects (silent -w).
+$(BENCH_OBJS): $(BUILD)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(TDM_FLAGS) $(BENCH_INCS) -c $< -o $@
+
+$(RB_SINGLE_OBJ): $(TDM_BENCH_DEPS)/rubberband/single/RubberBandSingle.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(STD) $(OPT) -w -I$(TDM_BENCH_DEPS)/rubberband $(SYSINCLUDES) -c $< -o $@
+
+$(ST_OBJS): $(BUILD)/bench/st/%.o: $(TDM_BENCH_DEPS)/soundtouch/source/SoundTouch/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(STD) $(OPT) -w -I$(TDM_BENCH_DEPS)/soundtouch/include $(SYSINCLUDES) -c $< -o $@
+
+check-bench-deps:
+	@test -f "$(TDM_BENCH_DEPS)/rubberband/single/RubberBandSingle.cpp" || (echo "error: RubberBandSingle.cpp not found under $(TDM_BENCH_DEPS)" ; exit 1)
+	@test -f "$(TDM_BENCH_DEPS)/soundtouch/include/SoundTouch.h" || (echo "error: SoundTouch.h not found under $(TDM_BENCH_DEPS)" ; exit 1)
+	@test -f "$(TDM_BENCH_DEPS)/signalsmith-stretch/signalsmith-stretch.h" || (echo "error: signalsmith-stretch.h not found under $(TDM_BENCH_DEPS)" ; exit 1)
+	@test -f "$(TDM_BENCH_DEPS)/linear/include/signalsmith-linear/stft.h" || (echo "error: linear stft.h not found under $(TDM_BENCH_DEPS)" ; exit 1)
 
 -include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(LABPITCH_OBJS:.o=.d) $(LABLIVE_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d
 
@@ -126,6 +164,28 @@ $(BUILD)/tdm_e2_study: $(BUILD)/dsp/lab/Pitch/LabWsolaE2Study.o $(BUILD)/dsp/lab
 	$(CXX) $(STD) $^ -o $@
 
 e2-study: $(BUILD)/tdm_e2_study
+
+# External-vs-internal pitch benchmark (lab only, not in `all`).
+# Links GPL/LGPL research deps: local benchmarking only, never product.
+$(BUILD)/tdm_bench_study: $(BUILD)/dsp/lab/bench/BenchStudy.o $(BENCH_OBJS) $(BENCH_EXT_OBJS) $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o $(BUILD)/dsp/lab/Pitch/LabPitchShift.o $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/WavFile.o
+	$(CXX) $(STD) $^ -o $@ $(BENCH_FRAMEWORKS)
+
+bench-study: check-bench-deps $(BUILD)/tdm_bench_study
+
+# Bench audition live binary (lab only, not in `all`): TdmEngine + TdmLive
+# recompiled with -DTDM_BENCH_LIVE into build/bench-live/ (the tdm_live and
+# tdm_dev objects/binaries are untouched), exposing ONLY the nominated
+# audition config (--bench rb2:SHIFT). Links GPL/LGPL research deps: local
+# audition only, never product.
+BENCHLIVE_OBJS := $(BUILD)/bench-live/host/TdmEngine.o $(BUILD)/bench-live/app/TdmLive.o
+$(BUILD)/bench-live/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(TDM_FLAGS) $(BENCH_INCS) -DTDM_BENCH_LIVE -c $< -o $@
+
+$(BUILD)/tdm_bench_live: $(TDM_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(BENCHLIVE_OBJS) $(BENCH_OBJS) $(BENCH_EXT_OBJS)
+	$(CXX) $(STD) $^ $(FRAMEWORKS) $(BENCH_FRAMEWORKS) -o $@
+
+bench-live: check-bench-deps $(BUILD)/tdm_bench_live
 
 test: $(BUILD)/tdm_tests
 	./$(BUILD)/tdm_tests

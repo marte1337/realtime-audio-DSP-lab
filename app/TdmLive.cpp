@@ -41,6 +41,14 @@
 // change it); type e + Enter while running to toggle enable (click-free),
 // q + Enter to quit. No latency compensation anywhere in the live path:
 // output lags input by WSOLA latency + device buffering (all printed).
+#ifdef TDM_BENCH_LIVE
+// BENCH AUDITION (--bench ID:SHIFT, this binary only): inserts an external
+// benchmark shifter before the rig (chain: input -> bench -> rig ->
+// output). Only id "rb2" (Rubber Band R2 realtime, the nominated audition
+// config) is accepted; SHIFT is one of 0|-1|-2|-7 and fixed for the run.
+// No e-toggle: the insert is always on. No latency compensation: output
+// lags input by bench latency + device buffering (all printed).
+#endif
 
 #include <cstdio>
 #include <string>
@@ -56,6 +64,9 @@ int main(int argc, char** argv)
   std::string delayTime, delayFb, delayMix, reverbDecay, reverbMix;
   std::string labWsola;
   std::string labWsolaCfg;
+#ifdef TDM_BENCH_LIVE
+  std::string labBench; // "ID:SHIFT", e.g. "rb2:-1"
+#endif
   std::string buffer;
   bool driveEnable = false, shapeEnable = false, delayEnable = false, reverbEnable = false;
   for (int i = 1; i < argc; ++i)
@@ -96,7 +107,11 @@ int main(int argc, char** argv)
          || a == "--tight" || a == "--drive" || a == "--bite" || a == "--weight" || a == "--contour"
          || a == "--presence" || a == "--delay-time" || a == "--delay-fb" || a == "--delay-mix"
          || a == "--reverb-decay" || a == "--reverb-mix" || a == "--output-trim" || a == "--lab-wsola"
-         || a == "--lab-wsola-cfg" || a == "--buffer")
+         || a == "--lab-wsola-cfg" || a == "--buffer"
+#ifdef TDM_BENCH_LIVE
+         || a == "--bench"
+#endif
+         )
         && i + 1 < argc)
     {
       if (a == "--nam")
@@ -137,6 +152,10 @@ int main(int argc, char** argv)
         labWsolaCfg = argv[++i];
       else if (a == "--buffer")
         buffer = argv[++i];
+#ifdef TDM_BENCH_LIVE
+      else if (a == "--bench")
+        labBench = argv[++i];
+#endif
       else
         outputTrim = argv[++i];
       continue;
@@ -148,6 +167,9 @@ int main(int argc, char** argv)
                 "       [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]\n"
                 "       [--output-trim db] [--lab-wsola 0|-1|-2|-7] [--lab-wsola-cfg WMS:TOLM:TOLP]\n"
                 "       [--buffer N] | --list\n");
+#ifdef TDM_BENCH_LIVE
+    std::printf("note: this is tdm_bench_live; it also accepts [--bench rb2:0|-1|-2|-7]\n");
+#endif
     return 2;
   }
 
@@ -244,6 +266,43 @@ int main(int argc, char** argv)
       }
       engine.configureLabWsola(st, wms, tolm, tolp);
     }
+#ifdef TDM_BENCH_LIVE
+    if (!labBench.empty())
+    {
+      // BENCH AUDITION: "ID:SHIFT", exactly one audition config per run,
+      // never combined with --lab-wsola (one pre-rig insert at a time).
+      if (!labWsola.empty())
+      {
+        std::printf("tdm_bench_live: error: --bench cannot be combined with --lab-wsola\n");
+        return 2;
+      }
+      const size_t c = labBench.find(':');
+      const std::string id = c == std::string::npos ? labBench : labBench.substr(0, c);
+      float st = 0.0f;
+      bool ok = (c != std::string::npos);
+      if (ok)
+      {
+        try
+        {
+          // Strict: reject trailing junk ("-1x") that stof would ignore.
+          size_t pos = 0;
+          st = std::stof(labBench.substr(c + 1), &pos);
+          ok = (pos == labBench.size() - c - 1);
+        }
+        catch (...)
+        {
+          ok = false;
+        }
+        ok = ok && (st == 0.0f || st == -1.0f || st == -2.0f || st == -7.0f);
+      }
+      if (id != "rb2" || !ok)
+      {
+        std::printf("tdm_bench_live: error: --bench must be rb2:0|-1|-2|-7\n");
+        return 2;
+      }
+      engine.configureLabBench(id, st);
+    }
+#endif
     if (!buffer.empty())
     {
       int b = 0;
@@ -315,8 +374,26 @@ int main(int argc, char** argv)
                     "output)\n",
                     engine.labWsolaWindowMs(), engine.labWsolaTolM(), engine.labWsolaTolP(),
                     std::stof(labWsola));
+#ifdef TDM_BENCH_LIVE
+      if (engine.labBenchConfigured())
+      {
+        // BENCH AUDITION: shift echo reuses the validated --bench value.
+        const size_t bc = labBench.find(':');
+        std::printf("lab-bench: id=%s shift=%.0f st ENABLED (chain: input -> bench -> rig -> output)\n",
+                    engine.labBenchId().c_str(), std::stof(labBench.substr(bc + 1)));
+      }
+#endif
       std::printf("latency: device=%.1fms wsola=%.1fms ring-slack~0-%.1fms => total ~%.1f-%.1fms (uncompensated)\n",
                   devMs, wsolaMs, slackMs, devMs + wsolaMs, devMs + wsolaMs + slackMs);
+#ifdef TDM_BENCH_LIVE
+      if (engine.labBenchConfigured())
+      {
+        const double benchMs = 1000.0 * engine.labBenchLatency() / sr;
+        std::printf("latency: device=%.1fms bench=%.1fms ring-slack~0-%.1fms => total ~%.1f-%.1fms "
+                    "(uncompensated)\n",
+                    devMs, benchMs, slackMs, devMs + benchMs, devMs + benchMs + slackMs);
+      }
+#endif
     }
     std::printf("press q + Enter to quit%s\n",
                 engine.labWsolaConfigured() ? ", e + Enter to toggle pitch" : "");

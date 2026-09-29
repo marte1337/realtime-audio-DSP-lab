@@ -102,6 +102,25 @@ public:
   // running with the insert configured, else 0). The live path does NOT
   // compensate it: output lags input by this plus device buffering.
   int labWsolaLatency() const;
+#ifdef TDM_BENCH_LIVE
+  // BENCH AUDITION (tdm_bench_live only; compiled out of tdm_live): arm
+  // an external benchmark shifter pre-rig insert (control thread,
+  // pre-start; takes effect on start()). id selects the engine ("rb2"
+  // = Rubber Band R2 realtime, the sole nominated audition config);
+  // shiftSt must be one of {0,-1,-2,-7}. Unknown id fails start() with
+  // a clean error. Fixed for the run: stop/change/start to change it.
+  void configureLabBench(const std::string& id, float shiftSt)
+  {
+    labBenchOn_ = true;
+    labBenchId_ = id;
+    labBenchShift_ = shiftSt;
+  }
+  bool labBenchConfigured() const { return labBenchOn_; }
+  const std::string& labBenchId() const { return labBenchId_; }
+  // BENCH AUDITION: insert latency in samples (valid while running with
+  // the insert configured, else 0). Not compensated, like labWsola.
+  int labBenchLatency() const;
+#endif
   // Actual device buffer sizes + names captured at start() (0/empty
   // unless running). Used for honest live-latency accounting.
   int inputBufferFrames() const { return inFrames_; }
@@ -139,6 +158,11 @@ private:
   int labWsolaTolM_ = 0;
   int labWsolaTolP_ = 0;
   bool labWsolaEnabled_ = true; // live-toggle mirror (start state: on)
+#ifdef TDM_BENCH_LIVE
+  bool labBenchOn_ = false;
+  std::string labBenchId_;
+  float labBenchShift_ = 0.0f;
+#endif
   int inFrames_ = 0;
   int outFrames_ = 0;
   std::string inDevName_;
