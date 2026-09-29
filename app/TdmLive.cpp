@@ -44,10 +44,11 @@
 #ifdef TDM_BENCH_LIVE
 // BENCH AUDITION (--bench ID:SHIFT, this binary only): inserts an external
 // benchmark shifter before the rig (chain: input -> bench -> rig ->
-// output). Only id "rb2" (Rubber Band R2 realtime, the nominated audition
-// config) is accepted; SHIFT is one of 0|-1|-2|-7 and fixed for the run.
-// No e-toggle: the insert is always on. No latency compensation: output
-// lags input by bench latency + device buffering (all printed).
+// output). Accepted ids: "rb2" (Rubber Band R2 realtime) and "t3k30"
+// (TONE3000 Transpose, 30 ms buffer, tonality off); SHIFT is one of
+// 0|-1|-2|-7 and fixed for the run. No e-toggle: the insert is always
+// on. No latency compensation: output lags input by bench latency +
+// device buffering (all printed).
 #endif
 
 #include <cstdio>
@@ -168,7 +169,7 @@ int main(int argc, char** argv)
                 "       [--output-trim db] [--lab-wsola 0|-1|-2|-7] [--lab-wsola-cfg WMS:TOLM:TOLP]\n"
                 "       [--buffer N] | --list\n");
 #ifdef TDM_BENCH_LIVE
-    std::printf("note: this is tdm_bench_live; it also accepts [--bench rb2:0|-1|-2|-7]\n");
+    std::printf("note: this is tdm_bench_live; it also accepts [--bench rb2|t3k30:0|-1|-2|-7]\n");
 #endif
     return 2;
   }
@@ -295,9 +296,9 @@ int main(int argc, char** argv)
         }
         ok = ok && (st == 0.0f || st == -1.0f || st == -2.0f || st == -7.0f);
       }
-      if (id != "rb2" || !ok)
+      if ((id != "rb2" && id != "t3k30") || !ok)
       {
-        std::printf("tdm_bench_live: error: --bench must be rb2:0|-1|-2|-7\n");
+        std::printf("tdm_bench_live: error: --bench must be rb2|t3k30:0|-1|-2|-7\n");
         return 2;
       }
       engine.configureLabBench(id, st);

@@ -83,7 +83,31 @@ ST_OBJS := $(addprefix $(BUILD)/bench/st/,$(ST_SRCS:.cpp=.o))
 RB_SINGLE_OBJ := $(BUILD)/bench/RubberBandSingle.o
 BENCH_EXT_OBJS := $(RB_SINGLE_OBJ) $(ST_OBJS)
 
-.PHONY: all test smoke clean check-deps check-bench-deps
+# TONE3000 Transpose benchmark (RESEARCH/BENCHMARK ONLY - never product).
+# Engine: TONE3000 main @ b8461cc (MIT), compiled in place from OUTSIDE
+# this repo (TDM_T3K_DIR). It needs JUCE 9.0.3 (TDM_JUCE_DIR, same pin as
+# upstream; AGPLv3/commercial dual) for juce_core + juce_audio_basics +
+# juce_audio_formats + juce_dsp. Nothing external is copied into
+# TechDeathMachine source; only our shim (BenchTone3000) lives here.
+# Bench binaries are lab-only and NOT part of `all` (linking AGPL code
+# stays an explicit local act).
+TDM_T3K_DIR ?= /tmp/tdm-tone3000-study/tone3000-plugin
+TDM_JUCE_DIR ?= /tmp/tdm-tone3000-study/juce
+T3K_INCS := -I$(TDM_T3K_DIR)/plugin/include -I$(TDM_JUCE_DIR)/modules
+T3K_DEFS := -DNDEBUG -DJUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 -DJUCE_MODULE_AVAILABLE_juce_core=1 -DJUCE_MODULE_AVAILABLE_juce_audio_basics=1 -DJUCE_MODULE_AVAILABLE_juce_audio_formats=1 -DJUCE_MODULE_AVAILABLE_juce_dsp=1 -DJUCE_USE_FLAC=0 -DJUCE_USE_OGGVORBIS=0 -DJUCE_USE_OPUS=0 -DJUCE_USE_MP3AUDIOFORMAT=0 -DJUCE_USE_LAME_AUDIO_FORMAT=0
+T3K_SHIM_SRCS := dsp/lab/bench/BenchTone3000.cpp
+T3K_SHIM_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(T3K_SHIM_SRCS))
+T3K_ENGINE_OBJ := $(BUILD)/bench/t3k/Transpose.o
+JUCE_MODS := juce_core juce_audio_basics juce_audio_formats juce_dsp
+# On Apple targets each module's .mm includes its .cpp, so only the .mm
+# compiles (plus juce_core's unshadowed CompilationTime TU) - the same
+# selection upstream's CMake makes.
+JUCE_OBJS := $(foreach m,$(JUCE_MODS),$(BUILD)/bench/juce/$(m)/$(m)_mm.o) $(BUILD)/bench/juce/juce_core/juce_core_CompilationTime.o
+T3K_OBJS := $(T3K_ENGINE_OBJ) $(JUCE_OBJS)
+T3K_FRAMEWORKS := -framework Cocoa -framework Foundation -framework IOKit -framework Security -framework CoreAudio -framework CoreMIDI -framework QuartzCore -framework AudioToolbox
+T3K_LIBS := -lz
+
+.PHONY: all test smoke clean check-deps check-bench-deps check-t3k-deps
 all: check-deps $(BUILD)/tdm_tests $(BUILD)/tdm_render $(BUILD)/tdm_live $(BUILD)/tdm_dev
 
 check-deps:
@@ -121,6 +145,30 @@ check-bench-deps:
 	@test -f "$(TDM_BENCH_DEPS)/soundtouch/include/SoundTouch.h" || (echo "error: SoundTouch.h not found under $(TDM_BENCH_DEPS)" ; exit 1)
 	@test -f "$(TDM_BENCH_DEPS)/signalsmith-stretch/signalsmith-stretch.h" || (echo "error: signalsmith-stretch.h not found under $(TDM_BENCH_DEPS)" ; exit 1)
 	@test -f "$(TDM_BENCH_DEPS)/linear/include/signalsmith-linear/stft.h" || (echo "error: linear stft.h not found under $(TDM_BENCH_DEPS)" ; exit 1)
+
+# TONE3000 shim (our code, strict warnings) + engine + JUCE (silent -w).
+$(T3K_SHIM_OBJS): $(BUILD)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(TDM_FLAGS) $(T3K_INCS) $(T3K_DEFS) -c $< -o $@
+
+$(T3K_ENGINE_OBJ): $(TDM_T3K_DIR)/plugin/src/Transpose.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(STD) $(OPT) -w -DNDEBUG $(T3K_INCS) $(T3K_DEFS) $(SYSINCLUDES) -c $< -o $@
+
+# JUCE module sources compile as Objective-C++ on Apple targets (as in
+# upstream's CMake): the module TUs enable native headers, which user
+# TUs (Transpose.cpp, our shim) leave off by default.
+$(BUILD)/bench/juce/%_mm.o: $(TDM_JUCE_DIR)/modules/%.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(STD) $(OPT) -w -DNDEBUG -I$(TDM_JUCE_DIR)/modules $(T3K_DEFS) $(SYSINCLUDES) -c $< -o $@
+
+$(BUILD)/bench/juce/juce_core/juce_core_CompilationTime.o: $(TDM_JUCE_DIR)/modules/juce_core/juce_core_CompilationTime.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(STD) $(OPT) -w -DNDEBUG -I$(TDM_JUCE_DIR)/modules $(T3K_DEFS) $(SYSINCLUDES) -c $< -o $@
+
+check-t3k-deps:
+	@test -f "$(TDM_T3K_DIR)/plugin/src/Transpose.cpp" || (echo "error: Transpose.cpp not found under $(TDM_T3K_DIR)" ; exit 1)
+	@test -f "$(TDM_JUCE_DIR)/modules/juce_dsp/juce_dsp.h" || (echo "error: juce_dsp.h not found under $(TDM_JUCE_DIR)" ; exit 1)
 
 -include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(LABPITCH_OBJS:.o=.d) $(LABLIVE_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d
 
@@ -166,26 +214,26 @@ $(BUILD)/tdm_e2_study: $(BUILD)/dsp/lab/Pitch/LabWsolaE2Study.o $(BUILD)/dsp/lab
 e2-study: $(BUILD)/tdm_e2_study
 
 # External-vs-internal pitch benchmark (lab only, not in `all`).
-# Links GPL/LGPL research deps: local benchmarking only, never product.
-$(BUILD)/tdm_bench_study: $(BUILD)/dsp/lab/bench/BenchStudy.o $(BENCH_OBJS) $(BENCH_EXT_OBJS) $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o $(BUILD)/dsp/lab/Pitch/LabPitchShift.o $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/WavFile.o
-	$(CXX) $(STD) $^ -o $@ $(BENCH_FRAMEWORKS)
+# Links GPL/LGPL/AGPL research deps: local benchmarking only, never product.
+$(BUILD)/tdm_bench_study: $(BUILD)/dsp/lab/bench/BenchStudy.o $(BENCH_OBJS) $(T3K_SHIM_OBJS) $(BENCH_EXT_OBJS) $(T3K_OBJS) $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o $(BUILD)/dsp/lab/Pitch/LabPitchShift.o $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/WavFile.o
+	$(CXX) $(STD) $^ -o $@ $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS)
 
-bench-study: check-bench-deps $(BUILD)/tdm_bench_study
+bench-study: check-bench-deps check-t3k-deps $(BUILD)/tdm_bench_study
 
 # Bench audition live binary (lab only, not in `all`): TdmEngine + TdmLive
 # recompiled with -DTDM_BENCH_LIVE into build/bench-live/ (the tdm_live and
 # tdm_dev objects/binaries are untouched), exposing ONLY the nominated
-# audition config (--bench rb2:SHIFT). Links GPL/LGPL research deps: local
-# audition only, never product.
+# audition configs (--bench rb2|t3k30:SHIFT). Links GPL/LGPL/AGPL research
+# deps: local audition only, never product.
 BENCHLIVE_OBJS := $(BUILD)/bench-live/host/TdmEngine.o $(BUILD)/bench-live/app/TdmLive.o
 $(BUILD)/bench-live/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(TDM_FLAGS) $(BENCH_INCS) -DTDM_BENCH_LIVE -c $< -o $@
 
-$(BUILD)/tdm_bench_live: $(TDM_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(BENCHLIVE_OBJS) $(BENCH_OBJS) $(BENCH_EXT_OBJS)
-	$(CXX) $(STD) $^ $(FRAMEWORKS) $(BENCH_FRAMEWORKS) -o $@
+$(BUILD)/tdm_bench_live: $(TDM_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(BENCHLIVE_OBJS) $(BENCH_OBJS) $(T3K_SHIM_OBJS) $(BENCH_EXT_OBJS) $(T3K_OBJS)
+	$(CXX) $(STD) $^ $(FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
 
-bench-live: check-bench-deps $(BUILD)/tdm_bench_live
+bench-live: check-bench-deps check-t3k-deps $(BUILD)/tdm_bench_live
 
 test: $(BUILD)/tdm_tests
 	./$(BUILD)/tdm_tests

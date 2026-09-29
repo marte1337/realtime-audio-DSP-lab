@@ -1,7 +1,8 @@
 // tdm_bench_study: external-vs-internal pitch benchmark (LAB ONLY).
 //
 // Renders external benchmark cells (Rubber Band R2 realtime + Live,
-// SoundTouch, Signalsmith) and internal references (accepted W20,
+// SoundTouch, Signalsmith, TONE3000 Transpose 20/30/40 ms + 30 ms with
+// 2 kHz Tonality) and internal references (accepted W20,
 // WSOLA-E 20:840:120, PV-D 2048/256, PV-A 4096/1024) through the lab DI
 // and deterministic KS voicings at -1/-2 (primary) and -7 (secondary
 // stress), writes latency-compensated WAVs to build/labpitch/bench_<id>/,
@@ -36,6 +37,7 @@
 #include "dsp/lab/bench/BenchShifter.h"
 #include "dsp/lab/bench/BenchSignalsmith.h"
 #include "dsp/lab/bench/BenchSoundTouch.h"
+#include "dsp/lab/bench/BenchTone3000.h"
 
 namespace
 {
@@ -465,6 +467,10 @@ int main()
     v.emplace_back(new tdm::bench::BenchRubberBand(tdm::bench::BenchRubberBand::Mode::Live));
     v.emplace_back(new tdm::bench::BenchSoundTouch());
     v.emplace_back(new tdm::bench::BenchSignalsmith());
+    v.emplace_back(new tdm::bench::BenchTone3000(tdm::bench::BenchTone3000::Window::Ms20));
+    v.emplace_back(new tdm::bench::BenchTone3000(tdm::bench::BenchTone3000::Window::Ms30));
+    v.emplace_back(new tdm::bench::BenchTone3000(tdm::bench::BenchTone3000::Window::Ms40));
+    v.emplace_back(new tdm::bench::BenchTone3000(tdm::bench::BenchTone3000::Window::Ms30, 2000.0f));
     v.emplace_back(new W20Adapter());
     v.emplace_back(new EAdapter());
     v.emplace_back(new PvdAdapter());

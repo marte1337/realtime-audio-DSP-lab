@@ -20,6 +20,7 @@
 #ifdef TDM_BENCH_LIVE
 #include "dsp/lab/bench/BenchRubberBand.h" // BENCH AUDITION only (cpp-local)
 #include "dsp/lab/bench/BenchShifter.h"
+#include "dsp/lab/bench/BenchTone3000.h"
 #endif
 #include "host/BufferRequest.h" // pure request validation (no HAL here)
 
@@ -435,14 +436,18 @@ bool TdmEngine::start(std::string& error)
     if (labBenchOn_)
     {
       // BENCH AUDITION: id whitelist keeps the binary's audition surface
-      // to the nominated config only; construct/prepare/reset inside try
+      // to the nominated configs only; construct/prepare/reset inside try
       // => clean error, like the wsola arm above. Shift is set before
       // reset() per the BenchShifter contract.
-      if (labBenchId_ != "rb2")
+      if (labBenchId_ == "rb2")
+        h->bench = std::make_unique<tdm::bench::BenchRubberBand>(
+            tdm::bench::BenchRubberBand::Mode::R2Realtime);
+      else if (labBenchId_ == "t3k30")
+        h->bench = std::make_unique<tdm::bench::BenchTone3000>(
+            tdm::bench::BenchTone3000::Window::Ms30); // tonality off
+      else
         throw std::runtime_error("unknown bench audition id \"" + labBenchId_
-                                 + "\" (supported: \"rb2\")");
-      h->bench = std::make_unique<tdm::bench::BenchRubberBand>(
-          tdm::bench::BenchRubberBand::Mode::R2Realtime);
+                                 + "\" (supported: \"rb2\", \"t3k30\")");
       h->bench->setShiftSemitones(static_cast<double>(labBenchShift_));
       h->bench->prepare(static_cast<double>(outSr), h->maxBlock);
       h->bench->reset();
