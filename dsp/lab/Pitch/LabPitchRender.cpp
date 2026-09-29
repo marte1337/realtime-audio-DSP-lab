@@ -6,6 +6,7 @@
 //   tdm_labpitch --in di.wav --out shifted.wav --shift -7 --wsola [--wms 20|30|40]
 //   tdm_labpitch --in di.wav --out shifted.wav --shift -1 --wsola --wms 20 --tol 640:320
 //   tdm_labpitch --in di.wav --out shifted.wav --shift -1 --pv2 B
+//   tdm_labpitch --in di.wav --out shifted.wav --shift -1 --e2 D
 //
 // Renders the input through LabPitchShift (or LabMultiPitch with --multi,
 // LabWsolaShift with --wsola, LabPitchV2 with --pv2; no rig, no NAM, no IR
@@ -31,6 +32,7 @@
 #include "dsp/lab/Pitch/LabPitchShift.h"
 #include "dsp/lab/Pitch/LabPitchV2.h"
 #include "dsp/lab/Pitch/LabWsolaShift.h"
+#include "dsp/lab/Pitch/LabWsolaV2.h"
 
 namespace
 {
@@ -38,7 +40,7 @@ void usage()
 {
   std::printf("usage: tdm_labpitch --in di.wav --out shifted.wav --shift -24..0 "
               "[--fft 256..16384] [--hop N/8..N/2] [--multi] [--wsola [--wms 14|16|20|30|40] "
-              "[--tol M:P]] [--pv2 A|B|C|D]\n");
+              "[--tol M:P]] [--pv2 A|B|C|D] [--e2 A|B|C|D|E]\n");
 }
 
 // Shared offline render: feed input + latency + tail zeros in blocks,
@@ -70,7 +72,7 @@ std::vector<float> renderThrough(P& p, const std::vector<float>& in, int* latenc
 
 int main(int argc, char** argv)
 {
-  std::string inPath, outPath, shift, fft, hop, wms, tol, pv2;
+  std::string inPath, outPath, shift, fft, hop, wms, tol, pv2, e2;
   bool multi = false;
   bool wsola = false;
   for (int i = 1; i < argc; ++i)
@@ -105,6 +107,8 @@ int main(int argc, char** argv)
       need("--tol", tol);
     else if (a == "--pv2")
       need("--pv2", pv2);
+    else if (a == "--e2")
+      need("--e2", e2);
     else
     {
       usage();
@@ -146,6 +150,17 @@ int main(int argc, char** argv)
     std::printf("tdm_labpitch: --pv2 must be one of A|B|C|D\n");
     return 2;
   }
+  if (!e2.empty() &&
+      (multi || wsola || !fft.empty() || !hop.empty() || !wms.empty() || !tol.empty() || !pv2.empty()))
+  {
+    std::printf("tdm_labpitch: --e2 rejects --fft/--hop/--multi/--wsola/--wms/--tol/--pv2\n");
+    return 2;
+  }
+  if (!e2.empty() && e2 != "A" && e2 != "B" && e2 != "C" && e2 != "D" && e2 != "E")
+  {
+    std::printf("tdm_labpitch: --e2 must be one of A|B|C|D|E\n");
+    return 2;
+  }
 
   try
   {
@@ -167,7 +182,27 @@ int main(int argc, char** argv)
                     p.alignDelay());
       cfg = buf;
     }
-    if (!pv2.empty())
+    if (!e2.empty())
+    {
+      tdm::lab::LabWsolaV2 p;
+      p.setConfig(20.0); // W20, fixed for the study
+      if (e2 == "B" || e2 == "D")
+        p.setSearch(960, 0); // causal cells (A/C stay default symmetric)
+      else if (e2 == "E")
+        p.setSearch(840, 120); // Q1 boundary probe
+      p.setMode((e2 == "C" || e2 == "D") ? tdm::lab::LabWsolaV2::Mode::SmallSkip
+                                        : tdm::lab::LabWsolaV2::Mode::Drift);
+      p.setShiftSt(shiftSt);
+      p.setEnabled(true);
+      p.reset(in.sampleRate);
+      out = renderThrough(p, in.samples, &lat);
+      char buf[128];
+      std::snprintf(buf, sizeof(buf), "e2-%s(W20,%s,Hs=%d)", e2.c_str(),
+                    (e2 == "B" || e2 == "D") ? "960:0" : (e2 == "E" ? "840:120" : "sym"),
+                    p.synthHop());
+      cfg = buf;
+    }
+    else if (!pv2.empty())
     {
       tdm::lab::LabPitchV2 p;
       p.setConfig(2048, 256); // PV-D geometry, fixed for the study
