@@ -21,6 +21,7 @@
 #include "dsp/lab/bench/BenchRubberBand.h" // BENCH AUDITION only (cpp-local)
 #include "dsp/lab/bench/BenchShifter.h"
 #include "dsp/lab/bench/BenchTone3000.h"
+#include "dsp/lab/Pitch/GuitarTransposeV2.h" // GT2 LAB AUDITION only (cpp-local)
 #endif
 #include "host/BufferRequest.h" // pure request validation (no HAL here)
 
@@ -186,6 +187,8 @@ struct TdmEngine::Hal
 #ifdef TDM_BENCH_LIVE
   std::unique_ptr<tdm::bench::BenchShifter> bench; // BENCH AUDITION: pre-rig, output thread only
   bool benchOn = false; // armed at start(), immutable while running
+  tdm::lab::GuitarTransposeV2 gt2; // GT2 LAB AUDITION: pre-rig, output thread only
+  bool gt2On = false; // armed at start(), immutable while running
 #endif
   int inChannels = 0;
   bool inInterleaved = false;
@@ -280,6 +283,8 @@ OSStatus TdmEngineAudio::outputProc(AudioDeviceID, const AudioTimeStamp*, const 
 #ifdef TDM_BENCH_LIVE
     if (h->benchOn)
       h->bench->processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
+    if (h->gt2On)
+      h->gt2.processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
 #endif
     // Space made the rig stereo-capable: one device channel renders the
     // mono fold-down, two or more get the L/R pair (extra channels cycle).
@@ -440,18 +445,34 @@ bool TdmEngine::start(std::string& error)
       // => clean error, like the wsola arm above. Shift is set before
       // reset() per the BenchShifter contract.
       if (labBenchId_ == "rb2")
+      {
         h->bench = std::make_unique<tdm::bench::BenchRubberBand>(
             tdm::bench::BenchRubberBand::Mode::R2Realtime);
+        h->bench->setShiftSemitones(static_cast<double>(labBenchShift_));
+        h->bench->prepare(static_cast<double>(outSr), h->maxBlock);
+        h->bench->reset();
+        h->benchOn = true;
+      }
       else if (labBenchId_ == "t3k30")
+      {
         h->bench = std::make_unique<tdm::bench::BenchTone3000>(
             tdm::bench::BenchTone3000::Window::Ms30); // tonality off
+        h->bench->setShiftSemitones(static_cast<double>(labBenchShift_));
+        h->bench->prepare(static_cast<double>(outSr), h->maxBlock);
+        h->bench->reset();
+        h->benchOn = true;
+      }
+      else if (labBenchId_ == "gt2")
+      {
+        // GT2 LAB AUDITION: our own engine, default config, fixed shift.
+        h->gt2.setEnabled(true);
+        h->gt2.setShiftSt(labBenchShift_);
+        h->gt2.reset(static_cast<double>(outSr)); // throws inside try => clean error
+        h->gt2On = true;
+      }
       else
         throw std::runtime_error("unknown bench audition id \"" + labBenchId_
-                                 + "\" (supported: \"rb2\", \"t3k30\")");
-      h->bench->setShiftSemitones(static_cast<double>(labBenchShift_));
-      h->bench->prepare(static_cast<double>(outSr), h->maxBlock);
-      h->bench->reset();
-      h->benchOn = true;
+                                 + "\" (supported: \"rb2\", \"t3k30\", \"gt2\")");
     }
 #endif
     // A rate change in Audio MIDI Setup between load and start must fail
@@ -588,7 +609,11 @@ int TdmEngine::labWsolaLatency() const
 #ifdef TDM_BENCH_LIVE
 int TdmEngine::labBenchLatency() const
 {
-  if (!hal_ || !hal_->benchOn || !hal_->bench)
+  if (!hal_)
+    return 0;
+  if (hal_->gt2On)
+    return hal_->gt2.latencySamples();
+  if (!hal_->benchOn || !hal_->bench)
     return 0;
   return hal_->bench->latencySamples();
 }
