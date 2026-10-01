@@ -44,7 +44,7 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(patsubst %.mm,$(BUILD)/%.o,$(DEV_SRCS))
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestHostBuffer.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 # Lab pitch prototype: standalone offline tool, deliberately NOT linked into
@@ -106,6 +106,14 @@ JUCE_OBJS := $(foreach m,$(JUCE_MODS),$(BUILD)/bench/juce/$(m)/$(m)_mm.o) $(BUIL
 T3K_OBJS := $(T3K_ENGINE_OBJ) $(JUCE_OBJS)
 T3K_FRAMEWORKS := -framework Cocoa -framework Foundation -framework IOKit -framework Security -framework CoreAudio -framework CoreMIDI -framework QuartzCore -framework AudioToolbox
 T3K_LIBS := -lz
+
+# DEV transpose A/B objects. DevTranspose.cpp compiles TWICE: once plain
+# (GT2-only, no JUCE) for tdm_tests via the generic rule, and once with
+# -DTDM_HAVE_TONE3000 (+ TONE3000/JUCE includes) for tdm_transpose_dev.
+# Production targets (tdm_live, tdm_render, tdm_dev) link neither.
+DEVTRANSPOSE_TEST_OBJ := $(BUILD)/dsp/lab/Pitch/DevTranspose.o
+DEVTRANSPOSE_DEV_OBJS := $(BUILD)/transpose-dev/dsp/lab/Pitch/DevTranspose.o $(BUILD)/transpose-dev/app/TdmTransposeDev.o
+GT2_OBJ := $(BUILD)/dsp/lab/Pitch/GuitarTransposeV2.o
 
 .PHONY: all test smoke clean check-deps check-bench-deps check-t3k-deps
 all: check-deps $(BUILD)/tdm_tests $(BUILD)/tdm_render $(BUILD)/tdm_live $(BUILD)/tdm_dev
@@ -170,9 +178,9 @@ check-t3k-deps:
 	@test -f "$(TDM_T3K_DIR)/plugin/src/Transpose.cpp" || (echo "error: Transpose.cpp not found under $(TDM_T3K_DIR)" ; exit 1)
 	@test -f "$(TDM_JUCE_DIR)/modules/juce_dsp/juce_dsp.h" || (echo "error: juce_dsp.h not found under $(TDM_JUCE_DIR)" ; exit 1)
 
--include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(LABPITCH_OBJS:.o=.d) $(LABLIVE_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d
+-include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(LABPITCH_OBJS:.o=.d) $(LABLIVE_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d $(DEVTRANSPOSE_DEV_OBJS:.o=.d)
 
-$(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS) $(LABPITCH_LIB) $(LABLIVE_OBJS)
+$(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS) $(LABPITCH_LIB) $(LABLIVE_OBJS) $(DEVTRANSPOSE_TEST_OBJ)
 	$(CXX) $(STD) $^ -o $@
 
 $(BUILD)/tdm_render: $(TDM_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmRender.o
@@ -241,6 +249,19 @@ $(BUILD)/tdm_gt2_study: $(BUILD)/dsp/lab/Pitch/GuitarTransposeStudy.o $(BUILD)/d
 	$(CXX) $(STD) $^ -o $@ $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS)
 
 gt2-study: check-t3k-deps $(BUILD)/tdm_gt2_study
+
+# DEV transpose A/B live binary (lab only, not in `all`): TdmEngine +
+# TechDeathRig (via the dependency-free TransposeInsert seam) + DevTranspose
+# with BOTH engines (GT2 + frozen TONE3000 reference). Links AGPL JUCE:
+# local audition only, never product. Production binaries are untouched.
+$(BUILD)/transpose-dev/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(TDM_FLAGS) $(T3K_INCS) $(T3K_DEFS) -DTDM_HAVE_TONE3000 -c $< -o $@
+
+$(BUILD)/tdm_transpose_dev: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(DEVTRANSPOSE_DEV_OBJS) $(GT2_OBJ) $(T3K_OBJS)
+	$(CXX) $(STD) $^ $(FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
+
+transpose-dev: check-t3k-deps $(BUILD)/tdm_transpose_dev
 
 test: $(BUILD)/tdm_tests
 	./$(BUILD)/tdm_tests

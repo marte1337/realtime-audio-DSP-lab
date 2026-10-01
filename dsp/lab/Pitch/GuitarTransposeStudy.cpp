@@ -391,10 +391,70 @@ struct Voicing
 };
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
   constexpr int kBlock = 128; // live interface condition
-  const float shifts[] = {-1.0f, -2.0f, -7.0f};
+  // Sweepable harness: default reproduces the promotion study exactly
+  // (shifts -1/-2/-7, all four cells). Deep-shift characterization passes
+  // --shifts/--cells explicitly; see docs/transpose-dev.md.
+  std::vector<float> shifts = {-1.0f, -2.0f, -7.0f};
+  std::vector<std::string> wantCells;
+  for (int i = 1; i < argc; ++i)
+  {
+    const std::string a = argv[i];
+    if ((a == "--shifts" || a == "--cells") && i + 1 < argc)
+    {
+      const std::string list = argv[++i];
+      std::vector<std::string> parts;
+      size_t b = 0;
+      while (b <= list.size())
+      {
+        const size_t c = list.find(',', b);
+        parts.push_back(list.substr(b, c == std::string::npos ? c : c - b));
+        if (c == std::string::npos)
+          break;
+        b = c + 1;
+      }
+      if (a == "--shifts")
+      {
+        shifts.clear();
+        for (const auto& p : parts)
+        {
+          try
+          {
+            size_t pos = 0;
+            const float st = std::stof(p, &pos);
+            if (pos != p.size() || !(st >= -24.0f && st <= 12.0f))
+              throw std::runtime_error("range");
+            shifts.push_back(st);
+          }
+          catch (...)
+          {
+            std::printf("tdm_gt2_study: error: --shifts needs comma floats in -24..+12\n");
+            return 2;
+          }
+        }
+      }
+      else
+      {
+        wantCells = parts;
+        for (const auto& p : wantCells)
+          if (p != "gt2" && p != "t3k30" && p != "w20" && p != "e20")
+          {
+            std::printf("tdm_gt2_study: error: --cells ids are gt2,t3k30,w20,e20\n");
+            return 2;
+          }
+      }
+      continue;
+    }
+    std::printf("usage: tdm_gt2_study [--shifts S,...] [--cells ID,...]\n");
+    return 2;
+  }
+  if (shifts.empty())
+  {
+    std::printf("tdm_gt2_study: error: empty --shifts\n");
+    return 2;
+  }
 
   tdm::MonoWav di;
   try
@@ -432,12 +492,20 @@ int main()
   const double chugStep = 60.0 / 140.0 / 2.0;
   const double riffStep = 60.0 / 150.0 / 4.0;
 
-  auto makeCells = []() {
+  auto makeCells = [&]() {
     std::vector<std::unique_ptr<tdm::bench::BenchShifter>> v;
-    v.emplace_back(new Gt2Adapter()); // cell 0 by construction (telemetry below)
-    v.emplace_back(new tdm::bench::BenchTone3000(tdm::bench::BenchTone3000::Window::Ms30));
-    v.emplace_back(new W20Adapter());
-    v.emplace_back(new EAdapter());
+    const auto want = [&](const char* id) {
+      return wantCells.empty()
+          || std::find(wantCells.begin(), wantCells.end(), id) != wantCells.end();
+    };
+    if (want("gt2"))
+      v.emplace_back(new Gt2Adapter());
+    if (want("t3k30"))
+      v.emplace_back(new tdm::bench::BenchTone3000(tdm::bench::BenchTone3000::Window::Ms30));
+    if (want("w20"))
+      v.emplace_back(new W20Adapter());
+    if (want("e20"))
+      v.emplace_back(new EAdapter());
     return v;
   };
   {
@@ -454,19 +522,27 @@ int main()
   for (float st : shifts)
   {
     const double r = std::exp2(st / 12.0);
-    const bool secondary = (st == -7.0f);
-    std::printf("\n=== shift %.0f (r=%.5f)%s ===\n", st, r, secondary ? " [secondary stress]" : "");
+    std::printf("\n=== shift %.0f (r=%.5f) ===\n", st, r);
     auto cells = makeCells();
     const int ncell = static_cast<int>(cells.size());
+    int gt2Idx = -1;
+    for (int ci = 0; ci < ncell; ++ci)
+      if (std::string(cells[ci]->id()) == "gt2")
+        gt2Idx = ci;
     std::vector<Render> diR(ncell);
     std::vector<std::vector<Render>> voiceR(ncell, std::vector<Render>(kNvoice));
     std::vector<double> cpuSec(ncell, 0.0);
     std::vector<int> obsLat(ncell, 0);
     std::vector<bool> determin(ncell, true);
-    // GT2 DI-render telemetry snapshot (cell 0 is Gt2Adapter).
+    // GT2 DI-render telemetry snapshot (found by id; absent when filtered).
     tdm::lab::GuitarTransposeV2::Telemetry gt2Tel{};
     long long gt2Act[5] = {};
     size_t gt2ActKept = 0;
+    // GT2 event-aggregate snapshot (NCC min/max, tap range, geometry).
+    double gt2NccMin = 1.0, gt2NccMax = -1.0;
+    size_t gt2EvKept = 0;
+    int gt2TapMin = 0, gt2TapMax = 0;
+    int gt2Floor = 0, gt2Window = 0, gt2FadeMin = 0, gt2FadeMax = 0;
 
     for (int ci = 0; ci < ncell; ++ci)
     {
@@ -500,7 +576,7 @@ int main()
         obsLat[ci] = first - at + c.latencySamples(); // back to raw-output terms
       }
       diR[ci] = renderBench(c, di.samples, kBlock);
-      if (ci == 0) // GT2 DI telemetry snapshot (engine is reused below)
+      if (ci == gt2Idx) // GT2 DI telemetry + event snapshot (engine reused below)
       {
         Gt2Adapter& g = static_cast<Gt2Adapter&>(c);
         gt2Tel = g.p_.telemetry();
@@ -511,6 +587,25 @@ int main()
           if (a >= 0 && a < 5)
             ++gt2Act[a];
         }
+        gt2Floor = g.p_.floorSamples();
+        gt2Window = g.p_.windowSamples();
+        gt2FadeMin = g.p_.fadeMinSamples();
+        gt2FadeMax = g.p_.fadeMaxSamples();
+        const size_t nEv = g.p_.spliceEventCount();
+        gt2EvKept = std::min(nEv, tdm::lab::GuitarTransposeV2::kEventLogSize);
+        for (size_t i = 0; i < gt2EvKept; ++i)
+        {
+          const auto e = g.p_.spliceEvent(i);
+          gt2NccMin = std::min(gt2NccMin, e.ncc);
+          gt2NccMax = std::max(gt2NccMax, e.ncc);
+          if (i == 0)
+            gt2TapMin = gt2TapMax = e.tapDelay;
+          else
+          {
+            gt2TapMin = std::min(gt2TapMin, e.tapDelay);
+            gt2TapMax = std::max(gt2TapMax, e.tapDelay);
+          }
+        }
       }
       {
         char path[144];
@@ -520,9 +615,6 @@ int main()
       }
       for (int vi = 0; vi < kNvoice; ++vi)
       {
-        if (secondary && std::string(voices[vi].id) != "r4" && std::string(voices[vi].id) != "maj" &&
-            std::string(voices[vi].id) != "lowB" && std::string(voices[vi].id) != "lowE")
-          continue;
         c.reset();
         voiceR[ci][vi] = renderBench(c, dryVoice[vi], kBlock);
         char path[144];
@@ -575,22 +667,15 @@ int main()
       (void)sE4;
     }
     // Table 2: voicing retention + stability (wantMin / AM / wander of weakest fund).
-    auto useVoice = [&](int i) {
-      return !secondary || std::string(voices[i].id) == "r4" || std::string(voices[i].id) == "maj" ||
-          std::string(voices[i].id) == "lowB" || std::string(voices[i].id) == "lowE";
-    };
     std::printf("%-6s", "cell");
     for (int i = 0; i < kNvoice; ++i)
-      if (useVoice(i))
-        std::printf(" | %-8s %-6s %-6s %-6s", voices[i].id, "wantMn", "amDep", "wander");
+      std::printf(" | %-8s %-6s %-6s %-6s", voices[i].id, "wantMn", "amDep", "wander");
     std::printf("\n");
     for (int ci = 0; ci < ncell; ++ci)
     {
       std::printf("%-6s", cells[ci]->id());
       for (int i = 0; i < kNvoice; ++i)
       {
-        if (!useVoice(i))
-          continue;
         const std::vector<float>& o = voiceR[ci][i].out;
         double wantMin = 1e300, wandMin = 1e300;
         const int off = static_cast<int>(kSr * 1.0), nf = static_cast<int>(kSr * 2.0);
@@ -676,12 +761,16 @@ int main()
                   maxStep(o.data() + s1a, s1b - s1a), hfRatio(o, di.samples, 0.6, 1.2));
     }
     // Table 4: GT2 engine telemetry from the DI render above, plus a
-    // sustain false-trigger probe (fresh engine per stimulus).
+    // sustain false-trigger probe (fresh engine per stimulus). Skipped when
+    // the gt2 cell is filtered out.
+    if (gt2Idx >= 0)
     {
       const double diSec = static_cast<double>(nDi) / kSr;
       const double meanJump = gt2Tel.jumpSum / std::max(1LL, gt2Tel.jumpCount);
       const double meanNcc = gt2Tel.nccSum / std::max(1LL, gt2Tel.jumpCount);
       const double meanFade = static_cast<double>(gt2Tel.fadeSum) / std::max(1LL, gt2Tel.jumpCount);
+      const double occupancy =
+          gt2Tel.samples > 0 ? static_cast<double>(gt2Tel.fadeSum) / gt2Tel.samples : 0.0;
       std::printf("gt2-di splices down/up=%lld/%lld syncFb=%lld dropped=%lld | jump mean/min/max=%.0f/%lld/%lld "
                   "ncc=%.3f fade=%.1fms rate=%.2f/s\n",
                   gt2Tel.driftSplicesDown, gt2Tel.driftSplicesUp, gt2Tel.syncFallbacks, gt2Tel.droppedFades,
@@ -692,12 +781,16 @@ int main()
                   gt2Tel.resyncBlockedDepth);
       std::printf("gt2-di onset actions kept=%zu [actioned=%lld fade=%lld refr=%lld depth=%lld dropped=%lld]\n",
                   gt2ActKept, gt2Act[0], gt2Act[1], gt2Act[2], gt2Act[3], gt2Act[4]);
+      std::printf("gt2-di events kept=%zu nccMin/Max=%.3f/%.3f tapDelayMin/Max=%d/%d "
+                  "geom floor/win/fadeMin/fadeMax=%d/%d/%d/%d fadeOccupancy=%.3f\n",
+                  gt2EvKept, gt2NccMin, gt2NccMax, gt2TapMin, gt2TapMax, gt2Floor, gt2Window, gt2FadeMin,
+                  gt2FadeMax, occupancy);
       const char* probeIds[] = {"lowE", "lowB", "maj"};
-      const int probeVi[] = {0, 1, 6}; // rendered at every shift incl. -7
+      const int probeVi[] = {0, 1, 6};
       std::printf("gt2-falseTrig");
       for (int k = 0; k < 3; ++k)
       {
-        Gt2Adapter& g = static_cast<Gt2Adapter&>(*cells[0]);
+        Gt2Adapter& g = static_cast<Gt2Adapter&>(*cells[gt2Idx]);
         g.reset();
         renderBench(g, dryVoice[probeVi[k]], kBlock);
         std::printf(" %s=%lld", probeIds[k], g.p_.telemetry().detectorEdges);

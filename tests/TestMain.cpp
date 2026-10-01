@@ -20,6 +20,7 @@ void runLabPitchTests();
 void runLabPV2Tests();
 void runLabWsolaV2Tests();
 void runGuitarTransposeTests();
+void runDevTransposeTests();
 void runLabMultiTests();
 void runLabWsolaTests();
 void runLabWsolaLatencyTests();
@@ -69,6 +70,7 @@ int main()
   runSuite("labwsolalatency", runLabWsolaLatencyTests);
   runSuite("labwsolalive", runLabWsolaLiveTests);
   runSuite("guitartranspose", runGuitarTransposeTests);
+  runSuite("devtranspose", runDevTransposeTests);
   runSuite("hostbuffer", runHostBufferTests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());
   for (const auto& f : tdm_test::failures())

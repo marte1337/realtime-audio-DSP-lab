@@ -18,6 +18,8 @@ void TechDeathRig::reset(double sampleRate, int maxBlockSize)
   right_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
   trim_.reset(sampleRate);
   gate_.reset(sampleRate);
+  if (transpose_ != nullptr)
+    transpose_->reset(sampleRate, maxBlockSize);
   drive_.reset(sampleRate);
   shape_.reset(sampleRate);
   space_.reset(sampleRate);
@@ -290,6 +292,8 @@ void TechDeathRig::processBlock(const float* const* inputs, int numInputChannels
     }
     trim_.processBlock(mono_.data(), mono_.data(), m);
     gate_.processBlock(mono_.data(), mono_.data(), m);
+    if (transpose_ != nullptr)
+      transpose_->process(mono_.data(), mono_.data(), m);
     drive_.processBlock(mono_.data(), mono_.data(), m);
     nam_.processBlock(mono_.data(), mono_.data(), m);
     ir_.processBlock(mono_.data(), mono_.data(), m);

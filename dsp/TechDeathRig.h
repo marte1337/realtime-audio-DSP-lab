@@ -1,7 +1,10 @@
 #pragma once
 
-// Rig: Input -> Input Trim -> TechDeathGate -> TightDrive -> NAM A2
-//   -> Cabinet IR -> ToneShape -> Space -> Output Trim -> Output.
+// Rig: Input -> Input Trim -> TechDeathGate -> [optional DEV transpose] ->
+//   TightDrive -> NAM A2 -> Cabinet IR -> ToneShape -> Space -> Output Trim
+//   -> Output. The transpose seam is null by default (production path is
+//   bit-identical with or without the seam); only DEV/benchmark hosts
+//   install an insert (see dsp/TransposeInsert.h).
 //
 // Everything through ToneShape is mono (multi-channel input is averaged
 // to mono: avoids the +6 dB surprise of summing; stereo width tricks come
@@ -50,6 +53,7 @@
 #include "dsp/InputTrim.h"
 #include "dsp/NamStage.h"
 #include "dsp/RigParams.h"
+#include "dsp/TransposeInsert.h"
 #include "dsp/Gate/TechDeathGate.h"
 #include "dsp/TightDrive/TightDrive.h"
 #include "dsp/ToneShape/ToneShape.h"
@@ -193,6 +197,14 @@ public:
   RigParams params() const;
   void setParams(const RigParams& p);
 
+  // DEV transpose seam (OFF-RT ONLY: call with audio stopped, before start).
+  // Installs a non-owning mono insert between Gate and TightDrive. Null
+  // (the default) preserves the production path bit-exactly. The pointed-to
+  // insert must outlive the rig's use of it; reset() forwards to it when set.
+  // Production hosts never call this; only DEV/benchmark binaries do.
+  void setTransposeInsert(TransposeInsert* insert) { transpose_ = insert; }
+  TransposeInsert* transposeInsert() const { return transpose_; }
+
   // RT-safe after reset(). inputs[nIn][nFrames] -> outputs[nOut][nOut].
   // Changed parameters are applied once here, at the block boundary.
   void processBlock(const float* const* inputs, int numInputChannels, float* const* outputs,
@@ -206,6 +218,7 @@ private:
 
   InputTrim trim_;
   TechDeathGate gate_;
+  TransposeInsert* transpose_ = nullptr; // DEV-only insert, null in production
   TightDrive drive_;
   NamStage nam_;
   CabIrStage ir_;
