@@ -117,6 +117,22 @@ Or start once and drive everything live: `ours`/`ref` switch engines,
 `off`/`on` bypasses. Restart with different `--transpose`/`--gt2-*` to
 change GT2 advanced config (start-time only).
 
+## AppKit developer UI
+
+The same stage is hosted in the existing developer app (`tdm_dev`,
+`host/dev/TdmDevApp.mm` — no second app): transpose section between Gate
+and TightDrive with enable checkbox, Our GT2 / T3K Ref segmented control,
+one-click A/B button, shift slider + integer stepper, and a compact status
+line. GT2 Advanced and TONE3000 Reference are in-place disclosures; the
+17 GT2 rows are built from the shared adapter table
+(`dsp/lab/Pitch/DevTransposeUi.h`), validate eagerly, and apply on the
+next Start (Stop → Start, like NAM/IR). See `docs/dev-control-app.md`.
+
+Known research note (not fixed here): the offline −12 GT2 low-B
+discrepancy vs TONE3000 is backlog — hardware A/B found the engines
+subjectively almost indistinguishable on tested guitar material even at
+−12. Positive-shift architecture limits (+4 and up) are likewise backlog.
+
 ## Offline characterization
 
 ```

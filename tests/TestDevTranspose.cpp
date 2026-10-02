@@ -2,11 +2,13 @@
 
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "dsp/TechDeathRig.h"
 #include "dsp/TransposeInsert.h"
 #include "dsp/lab/Pitch/DevTranspose.h"
+#include "dsp/lab/Pitch/DevTransposeUi.h"
 #include "dsp/lab/Pitch/GuitarTransposeV2.h"
 
 namespace
@@ -284,7 +286,101 @@ void runDevTransposeTests()
     TDM_CHECK(diff < 1e-6f, "bypass is latency-matched dry");
   }
 
-  // 5. Production rig seam: null insert is bit-exact; passthrough insert is
+  // 5. UI adapter field table: every descriptor maps to the right Config
+  // member, range-checks, and round-trips (the AppKit panel builds from it).
+  {
+    using tdm::lab::devGt2UiField;
+    using tdm::lab::devGt2UiFieldCount;
+    using tdm::lab::devGt2UiGet;
+    using tdm::lab::devGt2UiIsBaseline;
+    using tdm::lab::devGt2UiSet;
+    TDM_CHECK(devGt2UiFieldCount() == 17, "17 numeric adapter rows");
+    // Baseline reads back the auditioned defaults through the table.
+    const Gt2::Config base = Stage::knownGoodGt2();
+    const double expect[17] = {30.0, 2.0, 25.0, 30.0, 120.0, 0.95, 0.60, 2.0, 4.0, 4.0, 40.0,
+                               600.0, 2.0, 9.0, 6.0, 50.0, 5.0};
+    for (int i = 0; i < 17; ++i)
+      TDM_CHECK(devGt2UiGet(base, i) == expect[i], "adapter baseline readback");
+    // Each field writes its own member and nothing else.
+    for (int i = 0; i < 17; ++i)
+    {
+      Gt2::Config c = base;
+      const auto& f = devGt2UiField(i);
+      const double probe = (f.min + f.max) * 0.5;
+      TDM_CHECK(devGt2UiSet(c, i, probe), "adapter set accepts mid-range");
+      TDM_CHECK(!devGt2UiIsBaseline(c), "edited config is not baseline");
+      for (int j = 0; j < 17; ++j)
+      {
+        const double got = devGt2UiGet(c, j);
+        if (j == i)
+        {
+          // Integer fields round; the probe mid-point may be fractional.
+          const double want = (j == 15 || j == 16) ? static_cast<double>(static_cast<int>(probe + 0.5))
+                                                   : probe;
+          TDM_CHECK(got == want, "adapter set lands on own member");
+        }
+        else
+        {
+          TDM_CHECK(got == expect[j], "adapter set spares other members");
+        }
+      }
+      // Out-of-range rejected, config untouched.
+      Gt2::Config before = c;
+      TDM_CHECK(!devGt2UiSet(c, i, f.min - 1.0), "adapter rejects below min");
+      TDM_CHECK(!devGt2UiSet(c, i, f.max + 1.0), "adapter rejects above max");
+      TDM_CHECK(devGt2UiIsBaseline(before) == devGt2UiIsBaseline(c), "rejected set is side-effect free");
+    }
+    Gt2::Config mut = base;
+    TDM_CHECK(!devGt2UiSet(mut, -1, 0.0) && !devGt2UiSet(mut, 17, 0.0), "adapter rejects bad index");
+    TDM_CHECK(devGt2UiIsBaseline(base), "baseline helper true on baseline");
+    Gt2::Config noResync = base;
+    noResync.enableResync = false;
+    TDM_CHECK(!devGt2UiIsBaseline(noResync), "baseline helper sees resync flip");
+    // Descriptor keys match the CLI flag suffixes (same control vocabulary).
+    TDM_CHECK(std::string(devGt2UiField(0).key) == "window", "key window");
+    TDM_CHECK(std::string(devGt2UiField(5).key) == "fadencc-hi", "key fadencc-hi");
+    TDM_CHECK(std::string(devGt2UiField(16).key) == "skip", "key skip");
+  }
+
+  // 6. Shared control semantics: shift is one value for both engines,
+  // bypass preserves it, restores land exactly.
+  {
+    Stage s;
+    s.setShiftSt(-7.0f);
+    s.setT3kWindowMs(40);
+    s.setT3kTonalityHz(4000.0f);
+    TDM_CHECK(s.shiftSt() == -7.0f, "shared shift stored");
+    TDM_CHECK(s.t3kWindowMs() == 40 && s.t3kTonalityHz() == 4000.0f, "T3K config stored");
+    // Bypass cycles never touch shift or engine configs.
+    s.setEnabled(false);
+    s.setEnabled(true);
+    s.setEnabled(false);
+    TDM_CHECK(s.shiftSt() == -7.0f, "bypass preserves shift");
+    TDM_CHECK(s.t3kWindowMs() == 40 && s.t3kTonalityHz() == 4000.0f, "bypass preserves T3K config");
+    // GT2 custom config survives bypass + shift moves (applied at reset).
+    Gt2::Config custom = Stage::knownGoodGt2();
+    custom.windowMs = 40.0;
+    custom.enableResync = false;
+    s.configureGt2(custom);
+    s.setShiftSt(-3.0f);
+    s.setEnabled(true);
+    TDM_CHECK(s.gt2Config().windowMs == 40.0 && !s.gt2Config().enableResync,
+              "GT2 custom config preserved");
+    TDM_CHECK(s.shiftSt() == -3.0f, "shift moves under custom config");
+    // Restores land exactly on the auditioned references.
+    s.resetGt2ToBaseline();
+    s.setT3kWindowMs(Stage::kDefaultT3kWindowMs);
+    s.setT3kTonalityHz(Stage::kDefaultT3kTonalityHz);
+    TDM_CHECK(tdm::lab::devGt2UiIsBaseline(s.gt2Config()), "GT2 baseline restore exact");
+    TDM_CHECK(s.t3kWindowMs() == 30 && s.t3kTonalityHz() == 0.0f, "T3K reference restore exact");
+    // Shift moves reach the GT2 engine behaviorally (same input, new pitch).
+    const auto in = ksPluck(0.5f, 110.0f, static_cast<int>(kSr));
+    const auto at1 = runDevGt2(-1.0f, in, 128);
+    const auto at2 = runDevGt2(-2.0f, in, 128);
+    TDM_CHECK(maxAbsDiff(at1, at2) > 0.01f, "shared shift retunes GT2 render");
+  }
+
+  // 7. Production rig seam: null insert is bit-exact; passthrough insert is
   // transparent; the seam sits post-gate pre-drive (gain probe).
   {
     auto stim = ksPluck(0.5f, 82.41f, 8192);
