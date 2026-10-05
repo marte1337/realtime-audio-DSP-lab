@@ -28,6 +28,7 @@ void runLabWsolaTests();
 void runLabWsolaLatencyTests();
 void runLabWsolaLiveTests();
 void runHostBufferTests();
+void runSlamTests();
 
 namespace
 {
@@ -76,6 +77,7 @@ int main()
   runSuite("guitartranspose", runGuitarTransposeTests);
   runSuite("devtranspose", runDevTransposeTests);
   runSuite("hostbuffer", runHostBufferTests);
+  runSuite("slam", runSlamTests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());
   for (const auto& f : tdm_test::failures())
     std::printf("  FAIL %s\n", f.c_str());

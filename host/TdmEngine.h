@@ -93,6 +93,24 @@ public:
   int labWsolaTolM() const { return labWsolaTolM_; }
   int labWsolaTolP() const { return labWsolaTolP_; }
   bool labWsolaConfigured() const { return labWsolaOn_; }
+  // SLAM LAB AUDITION: arm one SLAM finalist insert (control thread,
+  // pre-start; takes effect on start()). mode 'a' = SlamPre pre-rig
+  // (study A1 when trim/gate/transpose are neutral), 'c' = SlamPostIr
+  // post-rig dual-mono (= study C when shape/space/trims are neutral),
+  // 'd' = split-tap SlamTrigger pre-rig + burst/bloom post-rig
+  // (= study dhyb). burstDelayMs retards the 'd' burst to compensate
+  // rig latency (0 with transpose off; 16 with transpose on). Off by
+  // default; when off the audio callback is untouched. B (post-NAM) is
+  // mid-rig and cannot audition at engine level: renders only.
+  void configureLabSlam(char mode, float bandHz, float amount, double burstDelayMs = 0.0)
+  {
+    labSlamOn_ = true;
+    labSlamMode_ = mode;
+    labSlamBand_ = bandHz;
+    labSlamAmount_ = amount;
+    labSlamDelayMs_ = burstDelayMs;
+  }
+  bool labSlamConfigured() const { return labSlamOn_; }
   // LAB AUDITION: live enable toggle (any thread while running; atomic
   // request, click-free ramp in the wrapper). No-op when stopped; the
   // start state is always enabled.
@@ -159,6 +177,11 @@ private:
   int labWsolaTolM_ = 0;
   int labWsolaTolP_ = 0;
   bool labWsolaEnabled_ = true; // live-toggle mirror (start state: on)
+  bool labSlamOn_ = false;
+  char labSlamMode_ = 0;
+  float labSlamBand_ = 140.0f;
+  float labSlamAmount_ = 1.0f;
+  double labSlamDelayMs_ = 0.0;
 #ifdef TDM_BENCH_LIVE
   bool labBenchOn_ = false;
   std::string labBenchId_;

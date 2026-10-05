@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "dsp/lab/Pitch/LabWsolaLive.h" // LAB AUDITION only (cpp-local)
+#include "dsp/lab/Slam/SlamCandidates.h" // SLAM AUDITION only (cpp-local)
 #ifdef TDM_BENCH_LIVE
 #include "dsp/lab/bench/BenchRubberBand.h" // BENCH AUDITION only (cpp-local)
 #include "dsp/lab/bench/BenchShifter.h"
@@ -184,6 +185,18 @@ struct TdmEngine::Hal
   std::vector<float> outScratchR; // rig channel 1 when stereo
   tdm::lab::LabWsolaLive wsola; // LAB AUDITION: pre-rig insert, output thread only
   bool wsolaOn = false; // armed at start(), immutable while running
+  // SLAM LAB AUDITION (not production): finalist inserts, output thread only.
+  char slamMode = 0; // 0=off, 'a'|'c'|'d', armed at start(), immutable while running
+  tdm::lab::SlamPre slamPre; // 'a': pre-rig parallel mass
+  tdm::lab::SlamPostIr slamPostL, slamPostR; // 'c': post-rig dual-mono mass
+  tdm::lab::SlamTrigger slamTrig; // 'd': pre-rig attack detector...
+  tdm::lab::SlamBurst slamBurst; // 'd': ...drives this post-rig burst...
+  tdm::lab::SlamBiquad slamBloomL, slamBloomR; // 'd': ...and per-channel bloom
+  float slamBloom = 0.0f, slamBloomDecay = 1.0f, slamBurstAmt = 1.0f;
+  int slamFireDelayN = 0; // burst retard in samples (rig-latency compensation)
+  int slamFireCountdown = -1; // -1 = no pending fire (90 ms refractory =>
+                              // at most one pending fire: blocks are < 90 ms)
+  float slamFireStrength = 0.0f;
 #ifdef TDM_BENCH_LIVE
   std::unique_ptr<tdm::bench::BenchShifter> bench; // BENCH AUDITION: pre-rig, output thread only
   bool benchOn = false; // armed at start(), immutable while running
@@ -280,6 +293,22 @@ OSStatus TdmEngineAudio::outputProc(AudioDeviceID, const AudioTimeStamp*, const 
     // LAB AUDITION (not production): W20 WSOLA pre-rig insert, in place.
     if (h->wsolaOn)
       h->wsola.processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
+    // SLAM LAB AUDITION (not production): 'a' pre-rig mass; 'd' pre-rig
+    // attack detector (fires are rendered post-rig below, same indices).
+    if (h->slamMode == 'a')
+      h->slamPre.processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
+    else if (h->slamMode == 'd')
+    {
+      for (UInt32 i = 0; i < m; ++i)
+      {
+        const float s = h->slamTrig.feed(h->outScratch[i]);
+        if (s > 0.0f)
+        {
+          h->slamFireStrength = s;
+          h->slamFireCountdown = static_cast<int>(i) + h->slamFireDelayN;
+        }
+      }
+    }
 #ifdef TDM_BENCH_LIVE
     if (h->benchOn)
       h->bench->processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
@@ -292,6 +321,47 @@ OSStatus TdmEngineAudio::outputProc(AudioDeviceID, const AudioTimeStamp*, const 
     const float* bi[1] = {h->outScratch.data()};
     float* bo[2] = {h->outScratch.data(), h->outScratchR.data()};
     self->rig_.processBlock(bi, 1, bo, wantStereo, static_cast<int>(m));
+    // SLAM LAB AUDITION (not production): 'c' post-rig mass; 'd' post-rig
+    // burst/bloom injection for the pre-rig detector above.
+    if (h->slamMode == 'c')
+    {
+      h->slamPostL.processBlock(h->outScratch.data(), h->outScratch.data(), static_cast<int>(m));
+      if (wantStereo == 2)
+        h->slamPostR.processBlock(h->outScratchR.data(), h->outScratchR.data(), static_cast<int>(m));
+    }
+    else if (h->slamMode == 'd')
+    {
+      for (UInt32 i = 0; i < m; ++i)
+      {
+        if (h->slamFireCountdown > 0)
+          --h->slamFireCountdown;
+        else if (h->slamFireCountdown == 0)
+        {
+          h->slamBurst.trigger(h->slamFireStrength);
+          h->slamBloom = 2.0f * h->slamFireStrength;
+          h->slamFireCountdown = -1;
+        }
+        const float b = h->slamBurst.process();
+        const float l = h->outScratch[i];
+        const float bl = h->slamBloomL.process(l);
+        float yl = l + h->slamBurstAmt * (b + h->slamBloom * bl);
+        if (!std::isfinite(yl))
+          yl = l;
+        h->outScratch[i] = yl;
+        if (wantStereo == 2)
+        {
+          const float r = h->outScratchR[i];
+          const float br = h->slamBloomR.process(r);
+          float yr = r + h->slamBurstAmt * (b + h->slamBloom * br);
+          if (!std::isfinite(yr))
+            yr = r;
+          h->outScratchR[i] = yr;
+        }
+        h->slamBloom *= h->slamBloomDecay;
+        if (h->slamBloom < 1e-5f)
+          h->slamBloom = 0.0f;
+      }
+    }
     for (UInt32 i = 0; i < m; ++i)
     {
       const float l = h->outScratch[i];
@@ -436,6 +506,31 @@ bool TdmEngine::start(std::string& error)
                        labWsolaTolP_);
       h->wsolaOn = true;
       labWsolaEnabled_ = true;
+    }
+    if (labSlamOn_)
+    {
+      // SLAM LAB AUDITION: study-winning voices (dhyb burst/bloom/detector).
+      h->slamMode = labSlamMode_;
+      h->slamPre.reset(outSr);
+      h->slamPre.setBandHz(labSlamBand_);
+      h->slamPre.setAmount(labSlamAmount_);
+      h->slamPostL.reset(outSr);
+      h->slamPostL.setBandHz(labSlamBand_);
+      h->slamPostL.setAmount(labSlamAmount_);
+      h->slamPostR.reset(outSr);
+      h->slamPostR.setBandHz(labSlamBand_);
+      h->slamPostR.setAmount(labSlamAmount_);
+      h->slamTrig.reset(outSr, 0.5f, 90.0f);
+      h->slamBurst.reset(outSr, 70.0f, 48.0f, 130.0f, 1.5f, 0.75f);
+      h->slamBloomL.reset();
+      h->slamBloomL.setLowpass(outSr, 105.0f, 0.7f);
+      h->slamBloomR.reset();
+      h->slamBloomR.setLowpass(outSr, 105.0f, 0.7f);
+      h->slamBloomDecay = static_cast<float>(std::exp(-6.907755278982137 / (0.070 * outSr)));
+      h->slamBloom = 0.0f;
+      h->slamBurstAmt = labSlamAmount_;
+      h->slamFireDelayN = static_cast<int>(labSlamDelayMs_ * 0.001 * outSr + 0.5);
+      h->slamFireCountdown = -1;
     }
 #ifdef TDM_BENCH_LIVE
     if (labBenchOn_)

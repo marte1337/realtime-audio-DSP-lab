@@ -47,7 +47,7 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(BUILD)/transpose-dev/host/dev/TdmDevApp.o
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTuner.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTuner.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp tests/TestSlam.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 # Lab pitch prototype: standalone offline tool, deliberately NOT linked into
@@ -66,6 +66,13 @@ LABPITCH_LIB := $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/lab/Pitch/LabPitchS
 LABLIVE_SRCS := dsp/lab/Pitch/LabWsolaLive.cpp
 LABLIVE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(LABLIVE_SRCS))
 LABWSOLA_OBJ := $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o
+
+# SLAM lab candidates (research only, never product): linked into the tests
+# (unit suite), tdm_slam_study, and the live/dev hosts (which own the
+# TdmEngine audition inserts; LabWsolaLive precedent). NOT linked into the
+# rig or tdm_render.
+SLAM_SRCS := dsp/lab/Slam/SlamCandidates.cpp
+SLAM_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(SLAM_SRCS))
 
 FRAMEWORKS := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
 DEV_FRAMEWORKS := $(FRAMEWORKS) -framework Cocoa -framework UniformTypeIdentifiers
@@ -188,16 +195,16 @@ check-t3k-deps:
 
 -include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(LABPITCH_OBJS:.o=.d) $(LABLIVE_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d $(DEVTRANSPOSE_DEV_OBJS:.o=.d)
 
-$(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS) $(LABPITCH_LIB) $(LABLIVE_OBJS) $(DEVTRANSPOSE_TEST_OBJ)
+$(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS) $(LABPITCH_LIB) $(LABLIVE_OBJS) $(DEVTRANSPOSE_TEST_OBJ) $(SLAM_OBJS)
 	$(CXX) $(STD) $^ -o $@
 
 $(BUILD)/tdm_render: $(TDM_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmRender.o
 	$(CXX) $(STD) $^ -o $@
 
-$(BUILD)/tdm_live: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(BUILD)/app/TdmLive.o
+$(BUILD)/tdm_live: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(SLAM_OBJS) $(BUILD)/app/TdmLive.o
 	$(CXX) $(STD) $^ $(FRAMEWORKS) -o $@
 
-$(BUILD)/tdm_dev: check-t3k-deps $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(DEV_OBJS) $(DEVTRANSPOSE_STAGE_OBJ) $(T3K_OBJS)
+$(BUILD)/tdm_dev: check-t3k-deps $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(SLAM_OBJS) $(DEV_OBJS) $(DEVTRANSPOSE_STAGE_OBJ) $(T3K_OBJS)
 	$(CXX) $(STD) $(filter-out check-t3k-deps,$^) $(DEV_FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
 
 $(BUILD)/tdm_labpitch: $(LABPITCH_OBJS) $(BUILD)/dsp/WavFile.o
@@ -246,7 +253,7 @@ $(BUILD)/bench-live/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(TDM_FLAGS) $(BENCH_INCS) -DTDM_BENCH_LIVE -c $< -o $@
 
-$(BUILD)/tdm_bench_live: $(TDM_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(BENCHLIVE_OBJS) $(BENCH_OBJS) $(T3K_SHIM_OBJS) $(BENCH_EXT_OBJS) $(T3K_OBJS)
+$(BUILD)/tdm_bench_live: $(TDM_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(SLAM_OBJS) $(BENCHLIVE_OBJS) $(BENCH_OBJS) $(T3K_SHIM_OBJS) $(BENCH_EXT_OBJS) $(T3K_OBJS)
 	$(CXX) $(STD) $^ $(FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
 
 bench-live: check-bench-deps check-t3k-deps $(BUILD)/tdm_bench_live
@@ -257,6 +264,14 @@ $(BUILD)/tdm_gt2_study: $(BUILD)/dsp/lab/Pitch/GuitarTransposeStudy.o $(GT2_OBJ)
 	$(CXX) $(STD) $^ -o $@ $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS)
 
 gt2-study: check-t3k-deps $(BUILD)/tdm_gt2_study
+
+# SLAM architectural study (lab only, not in `all`): wires the production
+# stage classes directly (the rig itself is untouched) with SLAM candidates
+# at pre-NAM / post-NAM / post-IR / impact positions. Renders + metrics.
+$(BUILD)/tdm_slam_study: $(BUILD)/dsp/lab/Slam/SlamStudy.o $(SLAM_OBJS) $(TDM_OBJS) $(NAM_OBJS)
+	$(CXX) $(STD) $^ -o $@
+
+slam-study: $(BUILD)/tdm_slam_study
 
 # DEV transpose A/B live binary (lab only, not in `all`): TdmEngine +
 # TechDeathRig (via the dependency-free TransposeInsert seam) + DevTranspose
@@ -270,7 +285,7 @@ $(BUILD)/transpose-dev/%.o: %.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(TDM_FLAGS) $(T3K_INCS) $(T3K_DEFS) -DTDM_HAVE_TONE3000 -fobjc-arc -c $< -o $@
 
-$(BUILD)/tdm_transpose_dev: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(DEVTRANSPOSE_DEV_OBJS) $(T3K_OBJS)
+$(BUILD)/tdm_transpose_dev: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(SLAM_OBJS) $(DEVTRANSPOSE_DEV_OBJS) $(T3K_OBJS)
 	$(CXX) $(STD) $^ $(FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
 
 transpose-dev: check-t3k-deps $(BUILD)/tdm_transpose_dev

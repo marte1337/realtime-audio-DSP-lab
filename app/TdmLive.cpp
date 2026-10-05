@@ -20,6 +20,13 @@
 //              [--lab-wsola-cfg WMS:TOLM:TOLP] (LAB AUDITION: shifter geometry;
 //                                            default 20:0:0 = accepted baseline;
 //                                            e.g. 20:640:320 latency-study geometry)
+//              [--slam a|c|d]            (SLAM AUDITION: finalist insert; a = pre-rig
+//                                        parallel mass, c = post-rig parallel mass,
+//                                        d = split-tap transient burst)
+//              [--slam-band Hz]          (SLAM AUDITION: branch corner, a/c only)
+//              [--slam-amount 0..2]      (SLAM AUDITION: branch/burst blend)
+//              [--slam-delay-ms ms]      (SLAM AUDITION: retard d-burst for rig
+//                                        latency; 0 normally, 16 with transpose)
 //              [--buffer N]              (request CoreAudio buffer frames)
 //   tdm_live --list            (show audio devices and exit)
 //
@@ -76,6 +83,7 @@ int main(int argc, char** argv)
   bool tunerEnable = false;
   std::string labWsola;
   std::string labWsolaCfg;
+  std::string labSlam, labSlamBand, labSlamAmount, labSlamDelay;
 #ifdef TDM_BENCH_LIVE
   std::string labBench; // "ID:SHIFT", e.g. "rb2:-1"
 #endif
@@ -125,7 +133,8 @@ int main(int argc, char** argv)
          || a == "--weight" || a == "--contour"
          || a == "--presence" || a == "--delay-time" || a == "--delay-fb" || a == "--delay-mix"
          || a == "--reverb-decay" || a == "--reverb-mix" || a == "--output-trim" || a == "--lab-wsola"
-         || a == "--lab-wsola-cfg" || a == "--buffer"
+         || a == "--lab-wsola-cfg" || a == "--buffer" || a == "--slam" || a == "--slam-band"
+         || a == "--slam-amount" || a == "--slam-delay-ms"
 #ifdef TDM_BENCH_LIVE
          || a == "--bench"
 #endif
@@ -170,6 +179,14 @@ int main(int argc, char** argv)
         labWsola = argv[++i];
       else if (a == "--lab-wsola-cfg")
         labWsolaCfg = argv[++i];
+      else if (a == "--slam")
+        labSlam = argv[++i];
+      else if (a == "--slam-band")
+        labSlamBand = argv[++i];
+      else if (a == "--slam-amount")
+        labSlamAmount = argv[++i];
+      else if (a == "--slam-delay-ms")
+        labSlamDelay = argv[++i];
       else if (a == "--buffer")
         buffer = argv[++i];
 #ifdef TDM_BENCH_LIVE
@@ -187,6 +204,7 @@ int main(int argc, char** argv)
                 "       [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]\n"
                 "       [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]\n"
                 "       [--output-trim db] [--lab-wsola 0|-1|-2|-7] [--lab-wsola-cfg WMS:TOLM:TOLP]\n"
+                "       [--slam a|c|d] [--slam-band Hz] [--slam-amount 0..2] [--slam-delay-ms ms]\n"
                 "       [--buffer N] | --list\n");
 #ifdef TDM_BENCH_LIVE
     std::printf("note: this is tdm_bench_live; it also accepts [--bench rb2|t3k30|gt2:0|-1|-2|-7]\n");
@@ -293,6 +311,53 @@ int main(int argc, char** argv)
         }
       }
       engine.configureLabWsola(st, wms, tolm, tolp);
+    }
+    if (!labSlam.empty())
+    {
+      // SLAM LAB AUDITION: one finalist insert per run, never combined
+      // with --lab-wsola (one audition at a time).
+      if (!labWsola.empty())
+      {
+        std::printf("tdm_live: error: --slam cannot be combined with --lab-wsola\n");
+        return 2;
+      }
+      if (labSlam.size() != 1 || (labSlam[0] != 'a' && labSlam[0] != 'c' && labSlam[0] != 'd'))
+      {
+        std::printf("tdm_live: error: --slam must be one of a|c|d\n");
+        return 2;
+      }
+      float band = (labSlam[0] == 'c') ? 220.0f : 140.0f; // study voices
+      float amount = 1.0f;
+      double delayMs = 0.0;
+      try
+      {
+        if (!labSlamBand.empty())
+          band = std::stof(labSlamBand);
+        if (!labSlamAmount.empty())
+          amount = std::stof(labSlamAmount);
+        if (!labSlamDelay.empty())
+          delayMs = std::stod(labSlamDelay);
+      }
+      catch (...)
+      {
+        std::printf("tdm_live: error: --slam-band/--slam-amount/--slam-delay-ms must be numeric\n");
+        return 2;
+      }
+      if (band < 40.0f || band > 600.0f || amount < 0.0f || amount > 2.0f || delayMs < 0.0
+          || delayMs > 100.0)
+      {
+        std::printf("tdm_live: error: --slam-band 40..600, --slam-amount 0..2, --slam-delay-ms "
+                    "0..100\n");
+        return 2;
+      }
+      engine.configureLabSlam(labSlam[0], band, amount, delayMs);
+      std::printf("lab slam: mode=%c band=%.0fHz amount=%.2f burst-delay=%.1fms\n", labSlam[0], band,
+                  amount, delayMs);
+    }
+    else if (!labSlamBand.empty() || !labSlamAmount.empty() || !labSlamDelay.empty())
+    {
+      std::printf("tdm_live: error: --slam-band/--slam-amount/--slam-delay-ms need --slam\n");
+      return 2;
     }
 #ifdef TDM_BENCH_LIVE
     if (!labBench.empty())
