@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "dsp/RigParams.h"
+#include "dsp/Tuner/Tuner.h"
 #include "dsp/lab/Pitch/DevTranspose.h"
 #include "dsp/lab/Pitch/DevTransposeUi.h"
 #include "host/TdmEngine.h"
@@ -49,6 +50,7 @@ tdm::RigParams auditionDefaults()
   p.gateEnabled = true;
   p.gateThresholdDb = -55.0f;
   p.gateReleaseMs = 52.0f;
+  p.tunerEnabled = true; // DEV: tuner readout live from the start (observes only)
   p.driveEnabled = true;
   p.tight = 0.85f;
   p.drive = 0.50f;
@@ -412,6 +414,44 @@ int smokeTest()
 }
 @end
 
+// Compact cents bar for the tuner readout: center = in tune, needle at the
+// smoothed deviation (±50 c full scale), green inside ±3 c, dim when invalid.
+@interface TdmCentsBar : NSView
+@property double cents;
+@property BOOL valid;
+@end
+
+@implementation TdmCentsBar
+- (void)drawRect:(NSRect)dirtyRect
+{
+  (void)dirtyRect;
+  const CGFloat w = self.bounds.size.width;
+  const CGFloat h = self.bounds.size.height;
+  const CGFloat midX = w * 0.5;
+  [[NSColor colorWithWhite:0.92 alpha:1.0] setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(0, 0, w, h) xRadius:3 yRadius:3] fill];
+  // In-tune zone (|3 c|).
+  [[NSColor colorWithCalibratedRed:0.75 green:0.90 blue:0.75 alpha:1.0] setFill];
+  const CGFloat zone = (3.0 / 50.0) * (w * 0.5 - 4.0);
+  NSRectFill(NSMakeRect(midX - zone, 2, zone * 2, h - 4));
+  // End ticks + center line.
+  [[NSColor colorWithWhite:0.55 alpha:1.0] setFill];
+  NSRectFill(NSMakeRect(3, 2, 1, h - 4));
+  NSRectFill(NSMakeRect(w - 4, 2, 1, h - 4));
+  [[NSColor colorWithWhite:0.35 alpha:1.0] setFill];
+  NSRectFill(NSMakeRect(midX - 0.5, 1, 1, h - 2));
+  if (!self.valid)
+    return;
+  const double c = std::max(-50.0, std::min(50.0, self.cents));
+  const CGFloat nx = midX + (c / 50.0) * (w * 0.5 - 6.0);
+  if (std::fabs(c) <= 3.0)
+    [[NSColor colorWithCalibratedRed:0.10 green:0.55 blue:0.20 alpha:1.0] setFill];
+  else
+    [[NSColor systemOrangeColor] setFill];
+  NSRectFill(NSMakeRect(nx - 2, 1, 4, h - 2));
+}
+@end
+
 // Minimal action target for the headless double-click check in smokeTest.
 @interface TdmSmokeTarget : NSObject
 @property(nonatomic) int actions;
@@ -463,12 +503,16 @@ bool probeDoubleClickReset(std::string& detail)
 - (instancetype)initWithEngine:(TdmEngine*)engine;
 - (void)buildUI;
 - (void)autoQuitAfter:(NSTimeInterval)seconds;
+- (void)refreshTuner; // 10 Hz readout snapshot (tick only)
 // Headless UI-wiring probe (smoke-test only): drives the real transpose
 // controls programmatically and verifies stage state. Needs no audio.
 - (BOOL)runTransposeProbe:(std::string*)detail;
 // Document-geometry check (probe only): every visible control inside the
 // document with a valid frame, no overlaps, same for open panel children.
 - (BOOL)checkDocGeometry:(std::string*)detail;
+// Tuner wiring probe (smoke-test only): drives the tuner checkbox and the
+// rig directly (no audio device) and verifies detection + transparency.
+- (BOOL)runTunerProbe:(std::string*)detail;
 @end
 
 @implementation DevController
@@ -489,6 +533,13 @@ bool probeDoubleClickReset(std::string& detail)
   NSMutableDictionary<NSNumber*, NSSlider*>* _sliders;
   NSMutableDictionary<NSNumber*, NSTextField*>* _valueLabels;
   NSButton* _gateCheck;
+  // Tuner readout (side-chain observer; display smoother is control-side).
+  NSButton* _tunerCheck;
+  NSTextField* _tunerNote;
+  NSTextField* _tunerCents;
+  NSTextField* _tunerHz;
+  TdmCentsBar* _tunerBar;
+  tdm::TunerDisplay _tunerDisplay;
   NSButton* _driveCheck;
   NSButton* _shapeCheck;
   NSButton* _delayCheck;
@@ -914,6 +965,25 @@ bool probeDoubleClickReset(std::string& detail)
   [_docView addSubview:hint];
   y += 40;
 
+  // Tuner row (side-chain readout of the raw input; observes only).
+  _tunerCheck = [NSButton checkboxWithTitle:@"Tuner" target:self action:@selector(tunerToggled:)];
+  _tunerCheck.frame = NSMakeRect(20, y, 80, 22);
+  _tunerCheck.state = NSControlStateValueOn; // matches auditionDefaults
+  [_docView addSubview:_tunerCheck];
+  _tunerNote = [self makeLabel:@"—" frame:NSMakeRect(120, y - 3, 90, 28) small:NO];
+  _tunerNote.font = [NSFont systemFontOfSize:20 weight:NSFontWeightSemibold];
+  [_docView addSubview:_tunerNote];
+  _tunerCents = [self makeLabel:@"" frame:NSMakeRect(220, y, 90, 22) small:NO];
+  [_docView addSubview:_tunerCents];
+  _tunerHz = [self makeLabel:@"" frame:NSMakeRect(320, y, 130, 22) small:YES];
+  [_docView addSubview:_tunerHz];
+  y += 30;
+  _tunerBar = [[TdmCentsBar alloc] initWithFrame:NSMakeRect(20, y, kWidth - 40, 14)];
+  _tunerBar.cents = 0.0;
+  _tunerBar.valid = NO;
+  [_docView addSubview:_tunerBar];
+  y += 24;
+
   NSBox* sep = [[NSBox alloc] initWithFrame:NSMakeRect(20, y, kWidth - 40, 1)];
   sep.boxType = NSBoxSeparator;
   [_docView addSubview:sep];
@@ -1269,6 +1339,7 @@ bool probeDoubleClickReset(std::string& detail)
   const tdm::RigParams p = _engine->rig().params(); // lock-free snapshot
   [self refreshValueLabels:p];
   [self refreshTransposeStatus];
+  [self refreshTuner];
   if (_engine->isRunning())
   {
     _statusLabel.stringValue =
@@ -1493,6 +1564,35 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)gateToggled:(NSButton*)sender
 {
   _engine->rig().setGateEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)tunerToggled:(NSButton*)sender
+{
+  _engine->rig().setTunerEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)refreshTuner
+{
+  tdm::TunerResult raw;
+  _engine->rig().tunerResult(raw); // lock-free snapshot
+  _tunerDisplay.update(raw);
+  const tdm::TunerDisplay::State& st = _tunerDisplay.state();
+  if (!st.valid)
+  {
+    _tunerNote.stringValue = @"—";
+    _tunerCents.stringValue = @"";
+    _tunerHz.stringValue = @"";
+    _tunerBar.valid = NO;
+    [_tunerBar setNeedsDisplay:YES];
+    return;
+  }
+  _tunerNote.stringValue = [NSString stringWithFormat:@"%s%d", st.name, st.octave];
+  const double c = st.cents;
+  _tunerCents.stringValue = [NSString stringWithFormat:@"%@%02.0f ¢", c < 0 ? @"−" : @"+", std::fabs(c)];
+  _tunerHz.stringValue = [NSString stringWithFormat:@"%.2f Hz", st.frequencyHz];
+  _tunerBar.cents = c;
+  _tunerBar.valid = YES;
+  [_tunerBar setNeedsDisplay:YES];
 }
 
 - (void)driveToggled:(NSButton*)sender
@@ -1738,6 +1838,94 @@ bool probeDoubleClickReset(std::string& detail)
   return YES;
 }
 
+- (BOOL)runTunerProbe:(std::string*)detail
+{
+  auto fail = [&](const char* msg) {
+    *detail = std::string(" [tuner: ") + msg + "]";
+    return NO;
+  };
+  // Audition default: checkbox on, rig param on.
+  if (_tunerCheck.state != NSControlStateValueOn)
+    return fail("checkbox not on");
+  if (!_engine->rig().isTunerEnabled())
+    return fail("rig param not on");
+  // Drive the rig directly (no audio device): E2 sine must read E2.
+  _engine->rig().reset(48000.0, 512);
+  const int n = 512 * 188; // block-aligned: no ragged tail reads
+  std::vector<float> in(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i)
+    in[static_cast<size_t>(i)] = 0.5f * std::sin(2.0 * 3.14159265358979 * 82.41 * i / 48000.0);
+  std::vector<float> out(static_cast<size_t>(n), 0.0f);
+  for (int off = 0; off < n; off += 512)
+  {
+    const float* bi[1] = {in.data() + off};
+    float* bo[1] = {out.data() + off};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  tdm::TunerResult r;
+  _engine->rig().tunerResult(r);
+  if (!r.valid || r.midiNote != 40 || std::fabs(r.cents) > 2.0f)
+    return fail("E2 not detected through rig");
+  // Display path: two ticks confirm from blank, labels show E2.
+  [self refreshTuner];
+  [self refreshTuner];
+  if (![_tunerNote.stringValue isEqualToString:@"E2"])
+    return fail("note label did not show E2");
+  if (!_tunerBar.valid)
+    return fail("cents bar not valid");
+  // Disable via the checkbox action: readout blanks promptly.
+  _tunerCheck.state = NSControlStateValueOff;
+  [self tunerToggled:_tunerCheck];
+  if (_engine->rig().isTunerEnabled())
+    return fail("disable did not reach rig");
+  {
+    // Adoption happens at the next block boundary (house param model).
+    const float* bi[1] = {in.data()};
+    float* bo[1] = {out.data()};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().tunerResult(r);
+  if (r.valid)
+    return fail("disable did not blank result");
+  // Re-enable and confirm detection resumes.
+  _tunerCheck.state = NSControlStateValueOn;
+  [self tunerToggled:_tunerCheck];
+  for (int off = 0; off < n; off += 512)
+  {
+    const float* bi[1] = {in.data() + off};
+    float* bo[1] = {out.data() + off};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().tunerResult(r);
+  if (!r.valid || r.midiNote != 40)
+    return fail("re-enable did not resume");
+  // Transparency through the real UI path: identical output on/off.
+  std::vector<float> off(512 * 8, 0.0f), on(512 * 8, 0.0f);
+  _tunerCheck.state = NSControlStateValueOff;
+  [self tunerToggled:_tunerCheck];
+  _engine->rig().reset(48000.0, 512); // identical start state, tuner off
+  for (int b = 0; b < 8; ++b)
+  {
+    const float* bi[1] = {in.data() + b * 512};
+    float* bo[1] = {off.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().reset(48000.0, 512);
+  _tunerCheck.state = NSControlStateValueOn;
+  [self tunerToggled:_tunerCheck];
+  for (int b = 0; b < 8; ++b)
+  {
+    const float* bi[1] = {in.data() + b * 512};
+    float* bo[1] = {on.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  if (off != on)
+    return fail("tuner changed rig output");
+  if (![self checkDocGeometry:detail])
+    return NO;
+  return YES;
+}
+
 - (void)chooseNam:(id)sender
 {
   (void)sender;
@@ -1808,6 +1996,8 @@ bool probeTransposeUiFull(std::string& detail)
     DevController* controller = [[DevController alloc] initWithEngine:engine];
     [controller buildUI];
     ok = [controller runTransposeProbe:&detail];
+    if (ok == YES)
+      ok = [controller runTunerProbe:&detail];
     delete engine; // stage (controller ivar) still alive: correct order
   }
   return ok == YES;

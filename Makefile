@@ -32,7 +32,7 @@ NAM_FLAGS := $(STD) $(OPT) -w $(DEFS) -I$(NAM_CORE_DIR) -I$(EIGEN_DIR) -I$(JSON_
 NAM_SRCS := $(wildcard $(NAM_CORE_DIR)/NAM/*.cpp) $(wildcard $(NAM_CORE_DIR)/NAM/wavenet/*.cpp)
 NAM_OBJS := $(patsubst $(NAM_CORE_DIR)/%.cpp,$(NAMOBJ)/%.o,$(NAM_SRCS))
 
-TDM_SRCS := dsp/NamStage.cpp dsp/CabIrStage.cpp dsp/WavFile.cpp dsp/TechDeathRig.cpp dsp/Gate/TechDeathGate.cpp dsp/InputTrim.cpp dsp/Pitch/GuitarTranspose.cpp dsp/TightDrive/TightDrive.cpp dsp/ToneShape/ToneShape.cpp dsp/Space/Delay.cpp dsp/Space/Reverb.cpp dsp/Space/SpaceProcessor.cpp dsp/OutputTrim.cpp
+TDM_SRCS := dsp/NamStage.cpp dsp/CabIrStage.cpp dsp/WavFile.cpp dsp/TechDeathRig.cpp dsp/Gate/TechDeathGate.cpp dsp/InputTrim.cpp dsp/Pitch/GuitarTranspose.cpp dsp/Tuner/Tuner.cpp dsp/TightDrive/TightDrive.cpp dsp/ToneShape/ToneShape.cpp dsp/Space/Delay.cpp dsp/Space/Reverb.cpp dsp/Space/SpaceProcessor.cpp dsp/OutputTrim.cpp
 TDM_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TDM_SRCS))
 
 # Live-audio host layer (CoreAudio duplex). Kept OUT of TDM_OBJS so the
@@ -47,7 +47,7 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(BUILD)/transpose-dev/host/dev/TdmDevApp.o
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTuner.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 # Lab pitch prototype: standalone offline tool, deliberately NOT linked into

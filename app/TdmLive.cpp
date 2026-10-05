@@ -10,6 +10,7 @@
 //   tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms]
 //              [--input-trim db]
 //              [--transpose-shift ST]   (production GuitarTranspose, -12..+12)
+//              [--tuner]                (chromatic tuner side-chain; u + Enter prints it)
 //              [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]
 //              [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]
 //              [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]
@@ -62,6 +63,7 @@
 #include <string>
 
 #include "dsp/RigParams.h"
+#include "dsp/Tuner/Tuner.h"
 #include "host/BufferRequest.h"
 #include "host/TdmEngine.h"
 
@@ -71,6 +73,7 @@ int main(int argc, char** argv)
   std::string tight, drive, bite, weight, contour, presence, outputTrim;
   std::string delayTime, delayFb, delayMix, reverbDecay, reverbMix;
   std::string transposeShift;
+  bool tunerEnable = false;
   std::string labWsola;
   std::string labWsolaCfg;
 #ifdef TDM_BENCH_LIVE
@@ -95,6 +98,11 @@ int main(int argc, char** argv)
     if (a == "--tight-drive")
     {
       driveEnable = true;
+      continue;
+    }
+    if (a == "--tuner")
+    {
+      tunerEnable = true;
       continue;
     }
     if (a == "--tone-shape")
@@ -173,7 +181,7 @@ int main(int argc, char** argv)
       continue;
     }
     std::printf("usage: tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms] "
-                "[--input-trim db] [--transpose-shift ST]\n"
+                "[--input-trim db] [--transpose-shift ST] [--tuner]\n"
                 "       [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n"
                 "       [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]\n"
                 "       [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]\n"
@@ -205,6 +213,8 @@ int main(int argc, char** argv)
       params.transposeSemitones = std::stof(transposeShift);
       params.transposeEnabled = true;
     }
+    if (tunerEnable)
+      params.tunerEnabled = true;
     if (driveEnable || !tight.empty() || !drive.empty() || !bite.empty())
     {
       if (!tight.empty())
@@ -363,13 +373,13 @@ int main(int argc, char** argv)
       std::snprintf(transposeDesc, sizeof(transposeDesc), "%.1f st", (double)applied.transposeSemitones);
     else
       std::snprintf(transposeDesc, sizeof(transposeDesc), "off");
-    std::printf("live: %.0fHz nam=%s ir=%s gate=%s trim=%.1f transpose=%s drive=%s shape=%s delay=%s "
-                "reverb=%s out trim=%.1f\n",
+    std::printf("live: %.0fHz nam=%s ir=%s gate=%s trim=%.1f transpose=%s tuner=%s drive=%s shape=%s "
+                "delay=%s reverb=%s out trim=%.1f\n",
                 engine.sampleRate(), engine.rig().hasNam() ? "yes" : "no",
                 engine.rig().hasIr() ? "yes" : "no", applied.gateEnabled ? "on" : "off", applied.inputTrimDb,
-                transposeDesc, applied.driveEnabled ? "on" : "off", applied.shapeEnabled ? "on" : "off",
-                applied.delayEnabled ? "on" : "off", applied.reverbEnabled ? "on" : "off",
-                applied.outputTrimDb);
+                transposeDesc, applied.tunerEnabled ? "on" : "off", applied.driveEnabled ? "on" : "off",
+                applied.shapeEnabled ? "on" : "off", applied.delayEnabled ? "on" : "off",
+                applied.reverbEnabled ? "on" : "off", applied.outputTrimDb);
     {
       // Startup latency report: requested vs ACTUAL everywhere. Nothing is
       // compensated: output lags input by the printed total. Ring slack is
@@ -425,7 +435,7 @@ int main(int argc, char** argv)
       }
 #endif
     }
-    std::printf("press q + Enter to quit, t + Enter to toggle transpose%s\n",
+    std::printf("press q + Enter to quit, t + Enter to toggle transpose, u + Enter for tuner%s\n",
                 engine.labWsolaConfigured() ? ", e + Enter to toggle lab pitch" : "");
     bool wsOn = true;
     bool trOn = applied.transposeEnabled;
@@ -440,6 +450,21 @@ int main(int argc, char** argv)
         engine.rig().setTransposeEnabled(trOn);
         std::printf("transpose: %s (%.1f st, %d-sample nominal latency while engaged)\n", trOn ? "ENABLED" : "off",
                     (double)engine.rig().transposeSemitones(), engine.rig().transposeLatencySamples());
+      }
+      if (line[0] == 'u' || line[0] == 'U')
+      {
+        tdm::TunerResult tr;
+        engine.rig().tunerResult(tr);
+        if (!engine.rig().isTunerEnabled())
+          std::printf("tuner: off (pass --tuner to analyze)\n");
+        else if (!tr.valid)
+          std::printf("tuner: --- (no pitched signal)\n");
+        else
+        {
+          const tdm::TunerNote nt = tdm::Tuner::noteFor(tr.frequencyHz);
+          std::printf("tuner: %s%d %+05.1f c %.2f Hz conf=%.2f\n", nt.name, nt.octave, tr.cents,
+                      tr.frequencyHz, tr.confidence);
+        }
       }
       if ((line[0] == 'e' || line[0] == 'E') && engine.labWsolaConfigured())
       {

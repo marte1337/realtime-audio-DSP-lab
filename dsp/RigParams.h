@@ -35,6 +35,10 @@ struct RigParams
   // integers are the normal product use).
   bool transposeEnabled = false;
   float transposeSemitones = GuitarTranspose::kDefaultShiftSt;
+  // Tuner analysis (side-chain observer of the raw mono input, before
+  // InputTrim). Disabled by default: analysis runs only when asked, and
+  // the audible path is bit-identical either way.
+  bool tunerEnabled = false;
   bool driveEnabled = false;
   float tight = TightDrive::kDefaultTight;
   float drive = TightDrive::kDefaultDrive;

@@ -49,6 +49,7 @@ void runRigParamsTests()
     TDM_CHECK(p.gateReleaseMs == tdm::TechDeathGate::kDefaultReleaseMs, "params default gate release");
     TDM_CHECK(!p.transposeEnabled, "params default transpose off");
     TDM_CHECK(p.transposeSemitones == tdm::GuitarTranspose::kDefaultShiftSt, "params default transpose 0 st");
+    TDM_CHECK(!p.tunerEnabled, "params default tuner off");
     TDM_CHECK(!p.driveEnabled, "params default drive off");
     TDM_CHECK(p.tight == tdm::TightDrive::kDefaultTight, "params default tight");
     TDM_CHECK(p.drive == tdm::TightDrive::kDefaultDrive, "params default drive");
@@ -103,6 +104,7 @@ void runRigParamsTests()
     p.gateReleaseMs = 52.0f;
     p.transposeEnabled = true;
     p.transposeSemitones = -2.0f;
+    p.tunerEnabled = true;
     p.driveEnabled = true;
     p.tight = 0.85f;
     p.drive = 0.50f;
@@ -113,6 +115,7 @@ void runRigParamsTests()
     TDM_CHECK(q.inputTrimDb == p.inputTrimDb && q.gateEnabled == p.gateEnabled
                   && q.gateThresholdDb == p.gateThresholdDb && q.gateReleaseMs == p.gateReleaseMs
                   && q.transposeEnabled == p.transposeEnabled && q.transposeSemitones == p.transposeSemitones
+                  && q.tunerEnabled == p.tunerEnabled
                   && q.driveEnabled == p.driveEnabled && q.tight == p.tight && q.drive == p.drive
                   && q.bite == p.bite && q.outputTrimDb == p.outputTrimDb,
               "setParams/params round-trip");

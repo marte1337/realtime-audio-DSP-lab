@@ -20,6 +20,8 @@
 // Transpose disengaged is an exact wire; engaged it runs wet at nonzero
 // shift or latency-matched dry at shift 0 (constant feel, 128-sample
 // ramps; see the transpose notes below).
+// The tuner observes the averaged raw mono input before InputTrim; it is
+// disabled by default and the audible path is bit-identical either way.
 // Input Trim defaults to 0 dB, at which it passes input bit-exactly.
 // TightDrive is disabled by default and bypasses exactly when off.
 // ToneShape is disabled by default and bypasses exactly when off (and is
@@ -32,7 +34,7 @@
 // Threading contract (developer-app era, DSP algorithms untouched):
 // - The atomic parameter setters below (setGateEnabled, setGateThresholdDb,
 //   setGateReleaseMs, setInputTrimDb, setTransposeEnabled,
-//   setTransposeSemitones, setDriveEnabled, setTight, setDrive, setBite,
+//   setTransposeSemitones, setTunerEnabled, setDriveEnabled, setTight, setDrive, setBite,
 //   setShapeEnabled, setWeight, setContour, setPresence,
 //   setDelayEnabled, setDelayTimeMs, setDelayFeedback, setDelayMix,
 //   setReverbEnabled, setReverbDecay, setReverbMix, setOutputTrimDb,
@@ -62,6 +64,7 @@
 #include "dsp/NamStage.h"
 #include "dsp/Pitch/GuitarTranspose.h"
 #include "dsp/RigParams.h"
+#include "dsp/Tuner/Tuner.h"
 #include "dsp/TransposeInsert.h"
 #include "dsp/Gate/TechDeathGate.h"
 #include "dsp/TightDrive/TightDrive.h"
@@ -128,6 +131,13 @@ public:
   }
   bool isTransposeEnabled() const { return transposeEnabled_.load(std::memory_order_relaxed); }
   float transposeSemitones() const { return transposeSt_.load(std::memory_order_relaxed); }
+
+  // Tuner analysis switch (side-chain observer; never touches audio).
+  // Disabled (default): the tap costs one branch per sub-block.
+  void setTunerEnabled(bool enabled) { tunerEnabled_.store(enabled, std::memory_order_relaxed); }
+  bool isTunerEnabled() const { return tunerEnabled_.load(std::memory_order_relaxed); }
+  // Latest tuner snapshot (any thread; seqlock read, see dsp/Tuner).
+  void tunerResult(TunerResult& out) const { tuner_.result(out); }
   // Nominal transpose latency in samples, valid post-reset (768 @ 48 kHz
   // baseline; 0 before reset). The stable reported figure for the engaged
   // path; the disengaged tap is an exact zero-latency wire.
@@ -254,6 +264,10 @@ private:
 
   static constexpr int kTransposeRampSamples = 128; // engage + wet ramps
 
+  // Side-chain tuner observer: fed the averaged raw mono input before
+  // InputTrim (see processBlock). Read-only tap; output bit-identical
+  // with analysis on or off.
+  Tuner tuner_;
   InputTrim trim_;
   TechDeathGate gate_;
   // Production transpose: default-baseline engine (never reconfigured) plus
@@ -294,6 +308,7 @@ private:
   std::atomic<float> gateRelMs_{TechDeathGate::kDefaultReleaseMs};
   std::atomic<bool> transposeEnabled_{false};
   std::atomic<float> transposeSt_{GuitarTranspose::kDefaultShiftSt};
+  std::atomic<bool> tunerEnabled_{false};
   std::atomic<bool> driveEnabled_{false};
   std::atomic<float> tightParam_{TightDrive::kDefaultTight};
   std::atomic<float> driveParam_{TightDrive::kDefaultDrive};
@@ -318,6 +333,7 @@ private:
   float appliedGateRelMs_ = TechDeathGate::kDefaultReleaseMs;
   bool appliedTransposeEnabled_ = false;
   float appliedTransposeSt_ = GuitarTranspose::kDefaultShiftSt;
+  bool appliedTunerEnabled_ = false;
   bool appliedDriveEnabled_ = false;
   float appliedTight_ = TightDrive::kDefaultTight;
   float appliedDrive_ = TightDrive::kDefaultDrive;

@@ -27,6 +27,7 @@ void TechDeathRig::reset(double sampleRate, int maxBlockSize)
   mono_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
   left_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
   right_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
+  tuner_.reset(sampleRate);
   trim_.reset(sampleRate);
   gate_.reset(sampleRate);
   // Production transpose: default baseline config (never reconfigured),
@@ -78,6 +79,7 @@ RigParams TechDeathRig::params() const
   p.gateReleaseMs = gateReleaseMs();
   p.transposeEnabled = isTransposeEnabled();
   p.transposeSemitones = transposeSemitones();
+  p.tunerEnabled = isTunerEnabled();
   p.driveEnabled = isDriveEnabled();
   p.tight = tight();
   p.drive = drive();
@@ -105,6 +107,7 @@ void TechDeathRig::setParams(const RigParams& p)
   setGateReleaseMs(p.gateReleaseMs);
   setTransposeEnabled(p.transposeEnabled);
   setTransposeSemitones(p.transposeSemitones);
+  setTunerEnabled(p.tunerEnabled);
   setDriveEnabled(p.driveEnabled);
   setTight(p.tight);
   setDrive(p.drive);
@@ -159,6 +162,12 @@ void TechDeathRig::syncParamsToStages()
     // primed nonzero at reset, so 0 <-> N moves work without a restart.
     transposeEngine_.setShiftSt(transposeSt);
     appliedTransposeSt_ = transposeSt;
+  }
+  const bool tunerEn = tunerEnabled_.load(std::memory_order_relaxed);
+  if (tunerEn != appliedTunerEnabled_)
+  {
+    tuner_.setEnabled(tunerEn); // flag flip (+ bounded ring clear); audio untouched
+    appliedTunerEnabled_ = tunerEn;
   }
   const bool driveEn = driveEnabled_.load(std::memory_order_relaxed);
   if (driveEn != appliedDriveEnabled_)
@@ -288,6 +297,8 @@ void TechDeathRig::pushAllParamsToStages()
   appliedGateRelMs_ = gateRelMs_.load(std::memory_order_relaxed);
   appliedTransposeEnabled_ = transposeEnabled_.load(std::memory_order_relaxed);
   appliedTransposeSt_ = transposeSt_.load(std::memory_order_relaxed);
+  appliedTunerEnabled_ = tunerEnabled_.load(std::memory_order_relaxed);
+  tuner_.setEnabled(appliedTunerEnabled_);
   // Park the transpose ramps at reset (deterministic start: no cross-reset
   // ramp state). Engine shift itself was set in reset().
   transposeEngage_ = appliedTransposeEnabled_ ? 1.0f : 0.0f;
@@ -397,6 +408,7 @@ void TechDeathRig::processBlock(const float* const* inputs, int numInputChannels
         acc += inputs[c][offset + i];
       mono_[static_cast<size_t>(i)] = static_cast<float>(acc / numInputChannels);
     }
+    tuner_.feedBlock(mono_.data(), m); // raw-mono side-chain tap (read-only)
     trim_.processBlock(mono_.data(), mono_.data(), m);
     gate_.processBlock(mono_.data(), mono_.data(), m);
     if (transpose_ != nullptr)
