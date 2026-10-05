@@ -12,6 +12,7 @@ void runRigTests();
 void runRigParamsTests();
 void runGateTests();
 void runTrimTests();
+void runTransposeTests();
 void runTightDriveTests();
 void runToneShapeTests();
 void runSpaceTests();
@@ -58,6 +59,7 @@ int main()
   runSuite("rigparams", runRigParamsTests);
   runSuite("gate", runGateTests);
   runSuite("trim", runTrimTests);
+  runSuite("transpose", runTransposeTests);
   runSuite("drive", runTightDriveTests);
   runSuite("toneshape", runToneShapeTests);
   runSuite("space", runSpaceTests);

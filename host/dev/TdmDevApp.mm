@@ -94,8 +94,8 @@ NSString* baseName(const std::string& p)
 }
 
 // Field-wise GT2 Config equality (pending-vs-applied restart badge).
-bool gt2ConfigsEqual(const tdm::lab::GuitarTransposeV2::Config& a,
-                     const tdm::lab::GuitarTransposeV2::Config& b)
+bool gt2ConfigsEqual(const tdm::GuitarTranspose::Config& a,
+                     const tdm::GuitarTranspose::Config& b)
 {
   return a.windowMs == b.windowMs && a.floorMs == b.floorMs && a.corrMs == b.corrMs
       && a.fadeMinMs == b.fadeMinMs && a.fadeMaxMs == b.fadeMaxMs && a.fadeNccHi == b.fadeNccHi
@@ -229,7 +229,7 @@ int smokeTest()
   // (Runs WITH TONE3000: tdm_dev links the reference by design.)
   {
     using Stage = tdm::lab::DevTranspose;
-    using Gt2 = tdm::lab::GuitarTransposeV2;
+    using Gt2 = tdm::GuitarTranspose;
     check(Stage::hasTone3000(), "dev app links the TONE3000 reference");
     check(tdm::lab::devGt2UiFieldCount() == 17, "adapter exposes 17 GT2 rows");
     Stage s;
@@ -479,7 +479,7 @@ bool probeDoubleClickReset(std::string& detail)
   // like the rig handoff; GT2 config edits go through configureGt2 on the
   // main thread and take effect on the next Start, like NAM/IR).
   tdm::lab::DevTranspose _stage;
-  tdm::lab::GuitarTransposeV2::Config _gt2Applied; // config used at last Start
+  tdm::GuitarTranspose::Config _gt2Applied; // config used at last Start
   NSWindow* _window;
   NSTextField* _statusLabel;
   NSTextField* _transposeStatus;
@@ -1227,7 +1227,7 @@ bool probeDoubleClickReset(std::string& detail)
 // GT2 advanced value labels from stored (pending) config.
 - (void)refreshGt2Rows
 {
-  const tdm::lab::GuitarTransposeV2::Config& cfg = _stage.gt2Config();
+  const tdm::GuitarTranspose::Config& cfg = _stage.gt2Config();
   for (int i = 0; i < tdm::lab::devGt2UiFieldCount(); ++i)
     _gt2Values[@(i)].stringValue = fmtGt2Field(i, tdm::lab::devGt2UiGet(cfg, i));
   _resyncCheck.state = cfg.enableResync ? NSControlStateValueOn : NSControlStateValueOff;
@@ -1421,7 +1421,7 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)gt2AdvancedChanged:(NSSlider*)sender
 {
   const int field = (int)sender.tag - kGt2AdvTagBase;
-  tdm::lab::GuitarTransposeV2::Config candidate = _stage.gt2Config();
+  tdm::GuitarTranspose::Config candidate = _stage.gt2Config();
   if (!tdm::lab::devGt2UiSet(candidate, field, sender.doubleValue))
   {
     sender.doubleValue = tdm::lab::devGt2UiGet(_stage.gt2Config(), field);
@@ -1444,7 +1444,7 @@ bool probeDoubleClickReset(std::string& detail)
 
 - (void)resyncToggled:(NSButton*)sender
 {
-  tdm::lab::GuitarTransposeV2::Config candidate = _stage.gt2Config();
+  tdm::GuitarTranspose::Config candidate = _stage.gt2Config();
   candidate.enableResync = (sender.state == NSControlStateValueOn);
   try
   {
@@ -1463,7 +1463,7 @@ bool probeDoubleClickReset(std::string& detail)
 {
   (void)sender;
   _stage.resetGt2ToBaseline();
-  const tdm::lab::GuitarTransposeV2::Config& cfg = _stage.gt2Config();
+  const tdm::GuitarTranspose::Config& cfg = _stage.gt2Config();
   for (int i = 0; i < tdm::lab::devGt2UiFieldCount(); ++i)
     _gt2Sliders[@(i)].doubleValue = tdm::lab::devGt2UiGet(cfg, i);
   [self refreshGt2Rows];

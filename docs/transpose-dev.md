@@ -1,9 +1,41 @@
-# Transpose DEV environment (GT2 vs TONE3000 reference)
+# Transpose: production engine + DEV A/B environment
 
-DEV-only A/B integration. Not production, not final UI. The accepted
-`GuitarTransposeV2` baseline (hardware-auditioned vs TONE3000 t3k30 at
-48 kHz / 128 frames, found almost indistinguishable) is frozen; the
-TONE3000 engine is a frozen external oracle.
+## Production promotion
+
+OUR accepted transpose baseline is now the production engine
+(`dsp/Pitch/GuitarTranspose.h`, class `tdm::GuitarTranspose`), promoted
+verbatim from the hardware-auditioned lab baseline (found almost
+indistinguishable from TONE3000 t3k30 at 48 kHz / 128 frames). The
+promotion is sample-equivalent by construction and pinned by a golden
+regression (`guitartranspose` suite: note/chord/riff at -1/-2/-7,
+bit-exact hashes).
+
+Production chain (real product path):
+
+```
+input -> InputTrim -> Gate -> GuitarTranspose -> TightDrive -> NAM -> IR
+      -> ToneShape -> Space -> OutputTrim -> output
+```
+
+Production controls (`RigParams`, live-safe): `transposeEnabled` and
+`transposeSemitones` (-12.0 … +12.0, float internally, integers are the
+normal use). The engine runs at its default baseline config (30 ms
+window, 2 ms floor, 25 ms correlation, 30–120 ms fades, re-sync on);
+advanced Config fields are NOT exposed to production. Nominal reported
+latency is 768 samples @ 48 kHz (16 ms); the disengaged tap is an exact
+wire, the engaged path runs wet (nonzero shift) or latency-matched dry
+(shift 0) with 128-sample ramps. `tests/TestTranspose.cpp` covers the
+production controls, bypass, reset/determinism, chain order, and
+downstream behavior.
+
+Validated primary use: fixed detune **-1 / -2**. The -12 … +12 range is
+available but NOT equally validated: the deep-shift (-5 and below) and
+positive-shift (+4 and up) research notes below remain backlog.
+
+## DEV A/B environment (ours vs TONE3000 reference)
+
+DEV-only A/B integration. Not final UI. The TONE3000 engine is a frozen
+external oracle and stays DEV-only: it never enters production builds.
 
 ## Architecture
 
@@ -13,18 +45,24 @@ input -> InputTrim -> Gate -> DEV Transpose -> TightDrive -> NAM -> IR
                              |
                 +------------+------------+
                 |                         |
-             OUR GT2              TONE3000 reference
-          (30 ms baseline)         (30 ms, Tonality OFF)
+      OUR production GT        TONE3000 reference
+     (rig engine + DEV A/B)     (30 ms, Tonality OFF)
 ```
 
-Exactly one engine feeds the rig at a time. The selector never touches
-unrelated rig state; each engine keeps its own configuration; downstream
-(TightDrive onward) never changes on a switch.
+The DEV stage substitutes for the production transpose at the same rig
+position (via the seam, off-RT install). Its "ours" side IS the
+production engine class — DEV adds only the A/B wrapper, the reference
+engine, and off-RT advanced Config overrides. Exactly one engine feeds
+the rig at a time. The selector never touches unrelated rig state; each
+engine keeps its own configuration; downstream (TightDrive onward) never
+changes on a switch.
 
 Files:
 
-- `dsp/TransposeInsert.h` — dependency-free rig seam (null in production).
-- `dsp/TechDeathRig.h/.cpp` — seam calls only (bit-exact when null).
+- `dsp/Pitch/GuitarTranspose.h/.cpp` — OUR production engine (baseline).
+- `dsp/TransposeInsert.h` — dependency-free rig seam (DEV substitute when
+  installed, production transpose otherwise).
+- `dsp/TechDeathRig.h/.cpp` — production transpose + seam substitution.
 - `dsp/lab/Pitch/DevTranspose.h/.cpp` — DEV stage (both engines, live
   selector, latency-matched bypass, GT2 DEV config, T3K live controls).
 - `app/TdmTransposeDev.cpp` — `tdm_transpose_dev` live host (CLI + stdin).
@@ -32,12 +70,12 @@ Files:
 - `dsp/lab/Pitch/GuitarTransposeStudy.cpp` — sweepable harness
   (`--shifts`, `--cells`, NCC min/max, tap range, fade occupancy).
 
-Isolation: `TechDeathRig` includes only the seam header (no JUCE, no
-TONE3000, no bench, no lab). `DevTranspose.cpp` compiles twice — plain
-(GT2-only) for `tdm_tests`, and with `-DTDM_HAVE_TONE3000` (+ JUCE /
-TONE3000 includes) only for `tdm_transpose_dev`. `tdm_live`,
-`tdm_render`, `tdm_dev` link no TONE3000/JUCE/bench/GT2/DevTranspose
-symbols (verified with `nm`; see the task report).
+Isolation: `DevTranspose.cpp` compiles twice — plain (ours-only, no
+JUCE) for `tdm_tests`, and with `-DTDM_HAVE_TONE3000` (+ JUCE /
+TONE3000 includes) only for `tdm_transpose_dev` and `tdm_dev`.
+Production targets (`tdm_live`, `tdm_render`) link the production
+engine (our own code) but no TONE3000/JUCE/DevTranspose/bench symbols
+(verified with `nm`; see the task report).
 
 ## Controls
 
@@ -71,9 +109,12 @@ TONE3000 reference (live, frozen algorithm, documented params only):
 
 Caveats:
 
-- GT2 reset at exact `0.0` st is a zero-latency wire until restart; live
-  shifts away from a 0-start need a restart on the GT2 side (the host
-  warns; TONE3000 follows through 0 at full latency). Use `off` for dry.
+- DEV-stage GT2 reset at exact `0.0` st is a zero-latency wire until
+  restart; live shifts away from a 0-start need a restart on the GT2
+  side (the host warns; TONE3000 follows through 0 at full latency).
+  Use `off` for dry. (The production rig path avoids this caveat: it
+  primes the engine at -2 st when the requested shift is 0, inaudibly,
+  so live 0 → N shifts work without a restart.)
 - `--no-standby` renders only the active engine (production-like CPU,
   cold standby after a switch). Default warms both for instant A/B.
 

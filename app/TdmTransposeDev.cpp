@@ -322,7 +322,7 @@ int main(int argc, char** argv)
     }
     {
       // GT2 advanced DEV params: start-time only, validated as a whole.
-      tdm::lab::GuitarTransposeV2::Config cfg = tdm::lab::DevTranspose::knownGoodGt2();
+      tdm::GuitarTranspose::Config cfg = tdm::lab::DevTranspose::knownGoodGt2();
       bool touched = false;
       double d = 0.0;
       int n = 0;

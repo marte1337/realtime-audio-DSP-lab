@@ -14,6 +14,7 @@
 #include "dsp/Gate/TechDeathGate.h"
 #include "dsp/InputTrim.h"
 #include "dsp/OutputTrim.h"
+#include "dsp/Pitch/GuitarTranspose.h"
 #include "dsp/TightDrive/TightDrive.h"
 #include "dsp/ToneShape/ToneShape.h"
 #include "dsp/Space/Delay.h"
@@ -28,6 +29,12 @@ struct RigParams
   bool gateEnabled = false;
   float gateThresholdDb = TechDeathGate::kDefaultThresholdDb;
   float gateReleaseMs = TechDeathGate::kDefaultReleaseMs;
+  // Production transpose (Gate -> GuitarTranspose -> TightDrive position).
+  // Disabled by default: the rig path is bit-exact with it off. Semitones
+  // are clamped to the production range at the rig (float accepted;
+  // integers are the normal product use).
+  bool transposeEnabled = false;
+  float transposeSemitones = GuitarTranspose::kDefaultShiftSt;
   bool driveEnabled = false;
   float tight = TightDrive::kDefaultTight;
   float drive = TightDrive::kDefaultDrive;

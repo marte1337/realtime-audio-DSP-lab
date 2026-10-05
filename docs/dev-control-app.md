@@ -6,6 +6,11 @@ Small graphical engineering interface for the current playable chain:
 Input Trim → Gate → Transpose → TightDrive → NAM → IR → ToneShape → Output Trim
 ```
 
+"Transpose" here is the DEV A/B stage: OUR production `GuitarTranspose`
+engine vs the frozen TONE3000 reference, substituted at the rig's
+transpose position. (`tdm_live` / `tdm_render` run the same production
+engine directly, without the A/B wrapper or the reference.)
+
 It replaces long `tdm_live` command lines while auditioning amps. It is
 infrastructure, not a product UI: no presets, no ToneShape, no meters,
 no experimental FX.

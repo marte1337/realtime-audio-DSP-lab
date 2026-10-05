@@ -9,7 +9,7 @@
 #include "dsp/TransposeInsert.h"
 #include "dsp/lab/Pitch/DevTranspose.h"
 #include "dsp/lab/Pitch/DevTransposeUi.h"
-#include "dsp/lab/Pitch/GuitarTransposeV2.h"
+#include "dsp/Pitch/GuitarTranspose.h"
 
 namespace
 {
@@ -51,7 +51,7 @@ std::vector<float> ksPluck(float peak, float freqHz, int n, uint32_t seed = 0x51
 // Latency-compensated offline run through the raw accepted GT2 baseline.
 std::vector<float> runRawGt2(float shiftSt, const std::vector<float>& in, int block)
 {
-  tdm::lab::GuitarTransposeV2 p; // default config == auditioned baseline
+  tdm::GuitarTranspose p; // default config == auditioned baseline
   p.setEnabled(true);
   p.setShiftSt(shiftSt);
   p.reset(kSr);
@@ -140,7 +140,7 @@ std::vector<float> runRig(tdm::TechDeathRig& rig, const std::vector<float>& in)
 
 void runDevTransposeTests()
 {
-  using Gt2 = tdm::lab::GuitarTransposeV2;
+  using Gt2 = tdm::GuitarTranspose;
   using Stage = tdm::lab::DevTranspose;
 
   // 1. The known-good baseline config is exactly the auditioned GT2 default.

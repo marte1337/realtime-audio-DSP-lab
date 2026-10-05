@@ -9,6 +9,7 @@
 // Usage:
 //   tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms]
 //              [--input-trim db]
+//              [--transpose-shift ST]   (production GuitarTranspose, -12..+12)
 //              [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]
 //              [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]
 //              [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]
@@ -23,6 +24,11 @@
 //
 // Passing either gate flag enables TechDeathGate (the other keeps its
 // default); without gate flags the gate bypasses exactly (Milestone 0 path).
+// Passing --transpose-shift enables the production GuitarTranspose at that
+// shift (Gate -> Transpose -> TightDrive position, baseline config). The
+// validated primary use is fixed detune -1/-2; the flag accepts -12..+12
+// (clamped). Type t + Enter while running to toggle transpose live
+// (click-free); q + Enter quits.
 // Passing --tight-drive or any of --tight/--drive/--bite enables TightDrive
 // (unspecified params keep their defaults); otherwise it bypasses exactly.
 // Passing --tone-shape or any of --weight/--contour/--presence enables
@@ -46,7 +52,7 @@
 // shifter before the rig (chain: input -> insert -> rig -> output).
 // Accepted ids: "rb2" (Rubber Band R2 realtime), "t3k30" (TONE3000
 // Transpose, 30 ms buffer, tonality off) and "gt2" (our own
-// GuitarTransposeV2, default config); SHIFT is one of 0|-1|-2|-7 and
+// GuitarTranspose, default config); SHIFT is one of 0|-1|-2|-7 and
 // fixed for the run. No e-toggle: the insert is always on. No latency
 // compensation: output lags input by insert latency + device buffering
 // (all printed).
@@ -64,6 +70,7 @@ int main(int argc, char** argv)
   std::string namPath, irPath, gateThresh, gateRel, inputTrim;
   std::string tight, drive, bite, weight, contour, presence, outputTrim;
   std::string delayTime, delayFb, delayMix, reverbDecay, reverbMix;
+  std::string transposeShift;
   std::string labWsola;
   std::string labWsolaCfg;
 #ifdef TDM_BENCH_LIVE
@@ -106,7 +113,8 @@ int main(int argc, char** argv)
       continue;
     }
     if ((a == "--nam" || a == "--ir" || a == "--gate-thresh" || a == "--gate-rel" || a == "--input-trim"
-         || a == "--tight" || a == "--drive" || a == "--bite" || a == "--weight" || a == "--contour"
+         || a == "--transpose-shift" || a == "--tight" || a == "--drive" || a == "--bite"
+         || a == "--weight" || a == "--contour"
          || a == "--presence" || a == "--delay-time" || a == "--delay-fb" || a == "--delay-mix"
          || a == "--reverb-decay" || a == "--reverb-mix" || a == "--output-trim" || a == "--lab-wsola"
          || a == "--lab-wsola-cfg" || a == "--buffer"
@@ -126,6 +134,8 @@ int main(int argc, char** argv)
         gateRel = argv[++i];
       else if (a == "--input-trim")
         inputTrim = argv[++i];
+      else if (a == "--transpose-shift")
+        transposeShift = argv[++i];
       else if (a == "--tight")
         tight = argv[++i];
       else if (a == "--drive")
@@ -163,7 +173,8 @@ int main(int argc, char** argv)
       continue;
     }
     std::printf("usage: tdm_live [--nam amp.nam] [--ir cab.wav] [--gate-thresh db] [--gate-rel ms] "
-                "[--input-trim db] [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n"
+                "[--input-trim db] [--transpose-shift ST]\n"
+                "       [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]\n"
                 "       [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]\n"
                 "       [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]\n"
                 "       [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]\n"
@@ -188,6 +199,11 @@ int main(int argc, char** argv)
       if (!gateRel.empty())
         params.gateReleaseMs = std::stof(gateRel);
       params.gateEnabled = true;
+    }
+    if (!transposeShift.empty())
+    {
+      params.transposeSemitones = std::stof(transposeShift);
+      params.transposeEnabled = true;
     }
     if (driveEnable || !tight.empty() || !drive.empty() || !bite.empty())
     {
@@ -342,10 +358,16 @@ int main(int argc, char** argv)
     }
 
     const tdm::RigParams applied = engine.rig().params();
-    std::printf("live: %.0fHz nam=%s ir=%s gate=%s trim=%.1f drive=%s shape=%s delay=%s reverb=%s out trim=%.1f\n",
+    char transposeDesc[32];
+    if (applied.transposeEnabled)
+      std::snprintf(transposeDesc, sizeof(transposeDesc), "%.1f st", (double)applied.transposeSemitones);
+    else
+      std::snprintf(transposeDesc, sizeof(transposeDesc), "off");
+    std::printf("live: %.0fHz nam=%s ir=%s gate=%s trim=%.1f transpose=%s drive=%s shape=%s delay=%s "
+                "reverb=%s out trim=%.1f\n",
                 engine.sampleRate(), engine.rig().hasNam() ? "yes" : "no",
                 engine.rig().hasIr() ? "yes" : "no", applied.gateEnabled ? "on" : "off", applied.inputTrimDb,
-                applied.driveEnabled ? "on" : "off", applied.shapeEnabled ? "on" : "off",
+                transposeDesc, applied.driveEnabled ? "on" : "off", applied.shapeEnabled ? "on" : "off",
                 applied.delayEnabled ? "on" : "off", applied.reverbEnabled ? "on" : "off",
                 applied.outputTrimDb);
     {
@@ -356,8 +378,12 @@ int main(int argc, char** argv)
       const int inb = engine.inputBufferFrames(), outb = engine.outputBufferFrames();
       const int req = engine.requestedBufferFrames();
       const int wlat = engine.labWsolaLatency();
+      // Production transpose latency counts only while engaged: the
+      // disengaged tap is an exact zero-latency wire (hot engine aside).
+      const int tlat = applied.transposeEnabled ? engine.rig().transposeLatencySamples() : 0;
       const double devMs = 1000.0 * (inb + outb) / sr;
       const double wsolaMs = 1000.0 * wlat / sr;
+      const double transposeMs = 1000.0 * tlat / sr;
       const double slackMs = 1000.0 * outb / sr;
       std::printf("audio: rate=%.0fHz requested buffer=%s\n", sr,
                   req > 0 ? std::to_string(req).c_str() : "default (flag omitted)");
@@ -385,8 +411,10 @@ int main(int argc, char** argv)
                     engine.labBenchId().c_str(), std::stof(labBench.substr(bc + 1)));
       }
 #endif
-      std::printf("latency: device=%.1fms wsola=%.1fms ring-slack~0-%.1fms => total ~%.1f-%.1fms (uncompensated)\n",
-                  devMs, wsolaMs, slackMs, devMs + wsolaMs, devMs + wsolaMs + slackMs);
+      std::printf("latency: device=%.1fms wsola=%.1fms transpose=%.1fms ring-slack~0-%.1fms => total "
+                    "~%.1f-%.1fms (uncompensated)\n",
+                  devMs, wsolaMs, transposeMs, slackMs, devMs + wsolaMs + transposeMs,
+                  devMs + wsolaMs + transposeMs + slackMs);
 #ifdef TDM_BENCH_LIVE
       if (engine.labBenchConfigured())
       {
@@ -397,14 +425,22 @@ int main(int argc, char** argv)
       }
 #endif
     }
-    std::printf("press q + Enter to quit%s\n",
-                engine.labWsolaConfigured() ? ", e + Enter to toggle pitch" : "");
+    std::printf("press q + Enter to quit, t + Enter to toggle transpose%s\n",
+                engine.labWsolaConfigured() ? ", e + Enter to toggle lab pitch" : "");
     bool wsOn = true;
+    bool trOn = applied.transposeEnabled;
     char line[64] = {};
     while (std::fgets(line, sizeof(line), stdin) != nullptr)
     {
       if (line[0] == 'q' || line[0] == 'Q')
         break;
+      if (line[0] == 't' || line[0] == 'T')
+      {
+        trOn = !trOn;
+        engine.rig().setTransposeEnabled(trOn);
+        std::printf("transpose: %s (%.1f st, %d-sample nominal latency while engaged)\n", trOn ? "ENABLED" : "off",
+                    (double)engine.rig().transposeSemitones(), engine.rig().transposeLatencySamples());
+      }
       if ((line[0] == 'e' || line[0] == 'E') && engine.labWsolaConfigured())
       {
         wsOn = !wsOn;

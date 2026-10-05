@@ -47,6 +47,8 @@ void runRigParamsTests()
     TDM_CHECK(!p.gateEnabled, "params default gate off");
     TDM_CHECK(p.gateThresholdDb == tdm::TechDeathGate::kDefaultThresholdDb, "params default gate thresh");
     TDM_CHECK(p.gateReleaseMs == tdm::TechDeathGate::kDefaultReleaseMs, "params default gate release");
+    TDM_CHECK(!p.transposeEnabled, "params default transpose off");
+    TDM_CHECK(p.transposeSemitones == tdm::GuitarTranspose::kDefaultShiftSt, "params default transpose 0 st");
     TDM_CHECK(!p.driveEnabled, "params default drive off");
     TDM_CHECK(p.tight == tdm::TightDrive::kDefaultTight, "params default tight");
     TDM_CHECK(p.drive == tdm::TightDrive::kDefaultDrive, "params default drive");
@@ -58,7 +60,8 @@ void runRigParamsTests()
     tdm::TechDeathRig rig;
     rig.reset(48000.0, 256);
     const tdm::RigParams p = rig.params();
-    TDM_CHECK(p.inputTrimDb == 0.0f && !p.gateEnabled && !p.driveEnabled && p.outputTrimDb == 0.0f,
+    TDM_CHECK(p.inputTrimDb == 0.0f && !p.gateEnabled && !p.transposeEnabled && p.transposeSemitones == 0.0f
+                  && !p.driveEnabled && p.outputTrimDb == 0.0f,
               "rig defaults snapshot");
   }
   // Setters clamp exactly like the stages (in-range values pass through).
@@ -68,6 +71,7 @@ void runRigParamsTests()
     rig.setInputTrimDb(99.0f);
     rig.setGateThresholdDb(99.0f);
     rig.setGateReleaseMs(-5.0f);
+    rig.setTransposeSemitones(99.0f);
     rig.setTight(2.0f);
     rig.setDrive(-2.0f);
     rig.setBite(7.0f);
@@ -80,6 +84,9 @@ void runRigParamsTests()
     rig.setGateThresholdDb(0.0f);
     TDM_CHECK(rig.gateThresholdDb() == -35.0f, "gate thresh max is -35 dB");
     TDM_CHECK(rig.gateReleaseMs() == tdm::TechDeathGate::kMinReleaseMs, "gate release clamps low");
+    TDM_CHECK(rig.transposeSemitones() == tdm::GuitarTranspose::kProductionMaxShiftSt, "transpose clamps high");
+    rig.setTransposeSemitones(-99.0f);
+    TDM_CHECK(rig.transposeSemitones() == tdm::GuitarTranspose::kProductionMinShiftSt, "transpose clamps low");
     TDM_CHECK(rig.tight() == tdm::TightDrive::kMaxTight, "tight clamps high");
     TDM_CHECK(rig.drive() == tdm::TightDrive::kMinDrive, "drive clamps low");
     TDM_CHECK(rig.bite() == tdm::TightDrive::kMaxBite, "bite clamps high");
@@ -94,6 +101,8 @@ void runRigParamsTests()
     p.gateEnabled = true;
     p.gateThresholdDb = -55.0f;
     p.gateReleaseMs = 52.0f;
+    p.transposeEnabled = true;
+    p.transposeSemitones = -2.0f;
     p.driveEnabled = true;
     p.tight = 0.85f;
     p.drive = 0.50f;
@@ -103,6 +112,7 @@ void runRigParamsTests()
     const tdm::RigParams q = rig.params();
     TDM_CHECK(q.inputTrimDb == p.inputTrimDb && q.gateEnabled == p.gateEnabled
                   && q.gateThresholdDb == p.gateThresholdDb && q.gateReleaseMs == p.gateReleaseMs
+                  && q.transposeEnabled == p.transposeEnabled && q.transposeSemitones == p.transposeSemitones
                   && q.driveEnabled == p.driveEnabled && q.tight == p.tight && q.drive == p.drive
                   && q.bite == p.bite && q.outputTrimDb == p.outputTrimDb,
               "setParams/params round-trip");

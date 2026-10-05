@@ -1,6 +1,6 @@
-// GuitarTransposeV2: Doppler transpose with rare matched splices. See header.
+// GuitarTranspose: Doppler transpose with rare matched splices. See header.
 
-#include "dsp/lab/Pitch/GuitarTransposeV2.h"
+#include "dsp/Pitch/GuitarTranspose.h"
 
 #include <algorithm>
 #include <cmath>
@@ -8,8 +8,6 @@
 #include <stdexcept>
 
 namespace tdm
-{
-namespace lab
 {
 namespace
 {
@@ -29,34 +27,34 @@ double clamp01(double x)
 }
 } // namespace
 
-GuitarTransposeV2::GuitarTransposeV2() = default;
+GuitarTranspose::GuitarTranspose() = default;
 
-void GuitarTransposeV2::setConfig(const Config& cfg)
+void GuitarTranspose::setConfig(const Config& cfg)
 {
   config_ = cfg; // validated at reset()
 }
 
-void GuitarTransposeV2::setShiftSt(float semitones)
+void GuitarTranspose::setShiftSt(float semitones)
 {
   const float clamped = semitones < kMinShiftSt ? kMinShiftSt : (semitones > kMaxShiftSt ? kMaxShiftSt : semitones);
   shiftSt_ = clamped;
   targetRatio_ = ratioFor(clamped);
 }
 
-void GuitarTransposeV2::setEnabled(bool enabled)
+void GuitarTranspose::setEnabled(bool enabled)
 {
   enabled_ = enabled;
 }
 
-double GuitarTransposeV2::ratioFor(float st) const
+double GuitarTranspose::ratioFor(float st) const
 {
   return std::pow(2.0, static_cast<double>(st) / 12.0);
 }
 
-void GuitarTransposeV2::reset(double sampleRate)
+void GuitarTranspose::reset(double sampleRate)
 {
   if (!(sampleRate >= 8000.0 && sampleRate <= 192000.0))
-    throw std::invalid_argument("GuitarTransposeV2: sample rate out of range");
+    throw std::invalid_argument("GuitarTranspose: sample rate out of range");
   const Config& c = config_;
   const auto inRange = [](double v, double lo, double hi) { return v >= lo && v <= hi; };
   if (!inRange(c.windowMs, 10.0, 120.0) || !inRange(c.floorMs, 0.5, 10.0) || c.floorMs >= c.windowMs
@@ -67,7 +65,7 @@ void GuitarTransposeV2::reset(double sampleRate)
       || !inRange(c.detectorSmoothMs, 0.5, 10.0) || !inRange(c.onsetOverMinDb, 3.0, 24.0)
       || !inRange(c.onsetOverMaxDb, 1.0, 18.0) || c.historyCells < 10 || c.historyCells > 200 || c.historySkip < 1
       || c.historySkip > 20 || c.historySkip >= c.historyCells)
-    throw std::invalid_argument("GuitarTransposeV2: config out of range");
+    throw std::invalid_argument("GuitarTranspose: config out of range");
 
   sampleRate_ = sampleRate;
   dMin_ = std::max(8, static_cast<int>(sampleRate * c.floorMs * 0.001));
@@ -130,7 +128,7 @@ void GuitarTransposeV2::reset(double sampleRate)
   traceFired_.clear();
 }
 
-void GuitarTransposeV2::updateUpshiftCap()
+void GuitarTranspose::updateUpshiftCap()
 {
   // An upshift tap gains on the write head, so every fade and every
   // search lead spends buffer at the drift rate. The longest fade is
@@ -162,14 +160,14 @@ void GuitarTransposeV2::updateUpshiftCap()
   }
 }
 
-int GuitarTransposeV2::onsetLatencySamples() const
+int GuitarTranspose::onsetLatencySamples() const
 {
   if (bypass0_ || sampleRate_ <= 0.0)
     return 0;
   return dMin_ + onsetSpan_ + onsetFadeLen_;
 }
 
-float GuitarTransposeV2::readTap(double pos) const
+float GuitarTranspose::readTap(double pos) const
 {
   // House cubic Lagrange kernel (same as LabPitchShift/LabWsolaShift).
   const long long i = static_cast<long long>(std::floor(pos));
@@ -185,7 +183,7 @@ float GuitarTransposeV2::readTap(double pos) const
   return y0 + f * (c1 + f * (c2 + f * c3));
 }
 
-double GuitarTransposeV2::nccAt(long long windowEnd) const
+double GuitarTranspose::nccAt(long long windowEnd) const
 {
   double sxy = 0.0;
   double syy = 0.0;
@@ -200,7 +198,7 @@ double GuitarTransposeV2::nccAt(long long windowEnd) const
   return ncc < -1.0 ? -1.0 : (ncc > 1.0 ? 1.0 : ncc);
 }
 
-void GuitarTransposeV2::beginSearch(int lo, int hi, int lead)
+void GuitarTranspose::beginSearch(int lo, int hi, int lead)
 {
   search_.active = true;
   search_.ready = false;
@@ -223,7 +221,7 @@ void GuitarTransposeV2::beginSearch(int lo, int hi, int lead)
   search_.perSample = lead > 0 ? (candidates + lead - 1) / lead : candidates;
 }
 
-void GuitarTransposeV2::considerCandidate(int d)
+void GuitarTranspose::considerCandidate(int d)
 {
   const double curDelay = static_cast<double>(search_.planPos - search_.tapAtPlan);
   const double jump = std::max(1.0, std::fabs(curDelay - static_cast<double>(d)));
@@ -240,7 +238,7 @@ void GuitarTransposeV2::considerCandidate(int d)
   }
 }
 
-void GuitarTransposeV2::stepSearch(int count)
+void GuitarTranspose::stepSearch(int count)
 {
   while (count-- > 0 && search_.next <= search_.hi)
   {
@@ -264,7 +262,7 @@ void GuitarTransposeV2::stepSearch(int count)
   }
 }
 
-int GuitarTransposeV2::fadeLenFor(double ncc, double room) const
+int GuitarTranspose::fadeLenFor(double ncc, double room) const
 {
   const double t = clamp01((config_.fadeNccHi - ncc) / (config_.fadeNccHi - config_.fadeNccLo));
   const double len = static_cast<double>(fadeMinLen_) + t * static_cast<double>(fadeMaxLen_ - fadeMinLen_);
@@ -272,7 +270,7 @@ int GuitarTransposeV2::fadeLenFor(double ncc, double room) const
   return std::max(8, static_cast<int>(capped));
 }
 
-bool GuitarTransposeV2::startFade(long long jump, int fadeLen, int kind)
+bool GuitarTranspose::startFade(long long jump, int fadeLen, int kind)
 {
   search_.ready = false;
   const double destDelay = static_cast<double>(writePos_) - (tapA_ + static_cast<double>(jump));
@@ -312,7 +310,7 @@ bool GuitarTransposeV2::startFade(long long jump, int fadeLen, int kind)
   return true;
 }
 
-bool GuitarTransposeV2::detectorStep(float x)
+bool GuitarTranspose::detectorStep(float x)
 {
   const long long now = writePos_;
   // First-order highpass: picks are HF-rich, steady lows sit below it.
@@ -359,7 +357,7 @@ bool GuitarTransposeV2::detectorStep(float x)
   return edge;
 }
 
-void GuitarTransposeV2::detectorResetHistory(double level)
+void GuitarTranspose::detectorResetHistory(double level)
 {
   const float f = static_cast<float>(level);
   std::fill(minHist_.begin(), minHist_.end(), f);
@@ -367,7 +365,7 @@ void GuitarTransposeV2::detectorResetHistory(double level)
   cellMin_ = cellMax_ = level;
 }
 
-void GuitarTransposeV2::processBlock(const float* input, float* output, int numFrames)
+void GuitarTranspose::processBlock(const float* input, float* output, int numFrames)
 {
   if (numFrames <= 0)
     return;
@@ -556,7 +554,7 @@ void GuitarTransposeV2::processBlock(const float* input, float* output, int numF
   }
 }
 
-GuitarTransposeV2::SpliceEvent GuitarTransposeV2::spliceEvent(size_t i) const
+GuitarTranspose::SpliceEvent GuitarTranspose::spliceEvent(size_t i) const
 {
   const size_t kept = spliceCount_ < kEventLogSize ? spliceCount_ : kEventLogSize;
   if (i >= kept)
@@ -565,7 +563,7 @@ GuitarTransposeV2::SpliceEvent GuitarTransposeV2::spliceEvent(size_t i) const
   return spliceLog_[(base + i) % kEventLogSize];
 }
 
-GuitarTransposeV2::OnsetEvent GuitarTransposeV2::onsetEvent(size_t i) const
+GuitarTranspose::OnsetEvent GuitarTranspose::onsetEvent(size_t i) const
 {
   const size_t kept = onsetCount_ < kEventLogSize ? onsetCount_ : kEventLogSize;
   if (i >= kept)
@@ -574,7 +572,7 @@ GuitarTransposeV2::OnsetEvent GuitarTransposeV2::onsetEvent(size_t i) const
   return onsetLog_[(base + i) % kEventLogSize];
 }
 
-void GuitarTransposeV2::enableTrace(bool on)
+void GuitarTranspose::enableTrace(bool on)
 {
   traceOn_ = on;
   traceEnv_.clear();
@@ -582,5 +580,4 @@ void GuitarTransposeV2::enableTrace(bool on)
   traceOverMax_.clear();
   traceFired_.clear();
 }
-} // namespace lab
 } // namespace tdm

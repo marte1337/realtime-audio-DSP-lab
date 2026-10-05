@@ -1,6 +1,6 @@
-// tdm_gt2_study: GuitarTransposeV2 promotion study (LAB ONLY).
+// tdm_gt2_study: GuitarTranspose promotion study (LAB ONLY).
 //
-// Compares our new GuitarTransposeV2 (gt2, default config) against the
+// Compares our new GuitarTranspose (gt2, default config) against the
 // validated external reference (actual TONE3000 t3k30) and our WSOLA
 // references (accepted W20, WSOLA-E 20:840:120) through the lab DI and
 // deterministic KS voicings at -1/-2 (primary) and -7 (secondary
@@ -33,7 +33,7 @@
 #include <vector>
 
 #include "dsp/WavFile.h"
-#include "dsp/lab/Pitch/GuitarTransposeV2.h"
+#include "dsp/Pitch/GuitarTranspose.h"
 #include "dsp/lab/Pitch/LabWsolaShift.h"
 #include "dsp/lab/bench/BenchShifter.h"
 #include "dsp/lab/bench/BenchTone3000.h"
@@ -103,7 +103,7 @@ struct EAdapter : tdm::bench::BenchShifter
 struct Gt2Adapter : tdm::bench::BenchShifter
 {
   const char* id() const override { return "gt2"; }
-  const char* config() const override { return "GuitarTransposeV2 default config (lab candidate)"; }
+  const char* config() const override { return "GuitarTranspose default config (production baseline)"; }
   void prepare(double sr, int mb) override
   {
     sr_ = sr;
@@ -123,7 +123,7 @@ struct Gt2Adapter : tdm::bench::BenchShifter
   double sr_ = 0;
   int mb_ = 0;
   double st_ = 0;
-  tdm::lab::GuitarTransposeV2 p_;
+  tdm::GuitarTranspose p_;
 };
 
 // ---- deterministic stimuli (same recipes as our studies) ----
@@ -535,7 +535,7 @@ int main(int argc, char** argv)
     std::vector<int> obsLat(ncell, 0);
     std::vector<bool> determin(ncell, true);
     // GT2 DI-render telemetry snapshot (found by id; absent when filtered).
-    tdm::lab::GuitarTransposeV2::Telemetry gt2Tel{};
+    tdm::GuitarTranspose::Telemetry gt2Tel{};
     long long gt2Act[5] = {};
     size_t gt2ActKept = 0;
     // GT2 event-aggregate snapshot (NCC min/max, tap range, geometry).
@@ -592,7 +592,7 @@ int main(int argc, char** argv)
         gt2FadeMin = g.p_.fadeMinSamples();
         gt2FadeMax = g.p_.fadeMaxSamples();
         const size_t nEv = g.p_.spliceEventCount();
-        gt2EvKept = std::min(nEv, tdm::lab::GuitarTransposeV2::kEventLogSize);
+        gt2EvKept = std::min(nEv, tdm::GuitarTranspose::kEventLogSize);
         for (size_t i = 0; i < gt2EvKept; ++i)
         {
           const auto e = g.p_.spliceEvent(i);

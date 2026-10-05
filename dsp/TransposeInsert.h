@@ -1,14 +1,15 @@
 #pragma once
 
-// TransposeInsert: production-safe seam for an optional mono transpose stage
-// inside TechDeathRig (between Gate and TightDrive).
+// TransposeInsert: production-safe seam for a DEV substitute transpose stage
+// inside TechDeathRig (at the Gate -> transpose -> TightDrive position).
 //
 // The rig owns nothing here: it holds a raw non-owning pointer (null by
-// default) and calls process() in place when set. The interface carries no
-// DSP, no lab types, and no third-party dependencies, so production targets
-// (tdm_render, tdm_live, tdm_dev, the rig unit tests) gain no JUCE, TONE3000,
-// benchmark, or lab symbols by including it. Only DEV/benchmark binaries
-// provide an implementation (see dsp/lab/Pitch/DevTranspose.h).
+// default) and calls process() in place when set INSTEAD of its production
+// transpose. The interface carries no DSP, no lab types, and no third-party
+// dependencies, so production targets (tdm_render, tdm_live, tdm_dev, the
+// rig unit tests) gain no JUCE, TONE3000, benchmark, or lab symbols by
+// including it. Only DEV binaries provide an implementation (the A/B
+// stage, see dsp/lab/Pitch/DevTranspose.h).
 //
 // Threading: setTransposeInsert()/reset() are OFF-RT ONLY (call with audio
 // stopped, before start). process() is RT-safe after reset().

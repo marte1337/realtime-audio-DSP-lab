@@ -21,7 +21,7 @@ The current processing concept is built around a hybrid approach:
 
 A typical signal path currently looks approximately like:
 
-`Input → Gate → Preamp Processing → NAM → Cabinet IR → Tone Shaping → Stereo Space → Output`
+`Input → Gate → Transpose → Preamp Processing → NAM → Cabinet IR → Tone Shaping → Stereo Space → Output`
 
 Individual stages are intentionally kept modular so algorithms can be tested independently before becoming part of the main signal chain.
 
@@ -88,9 +88,16 @@ The phase-vocoder version significantly improved stability and polyphonic behavi
 
 A multi-resolution prototype successfully combined the tonal strengths of long windows with the transient behaviour of shorter ones, but inherited the latency of the slowest path.
 
-The current most promising direction is a WSOLA-based time-domain approach, which has so far preserved low-frequency content, chord structure and pitch accuracy while reducing algorithmic latency to roughly the 30 ms range.
+That WSOLA work led to a Doppler-style transpose engine with rare
+waveform-matched splices and onset re-sync, which passed real-guitar
+audition (near-indistinguishable from a frozen external reference at
+-1/-2) and has since been promoted into the production signal path as
+`GuitarTranspose` (Gate → Transpose → TightDrive position, 16 ms nominal
+latency, fixed-detune -1/-2 as the validated primary use).
 
-This work is still experimental and is deliberately kept separate from the production signal path until real-time playing tests justify integration.
+Deeper shifts (-5 and below) and positive shifts (+4 and up) remain
+active research backlog: the engine exposes -12…+12, but those ranges
+are not validated to the same standard yet.
 
 ## Engineering approach
 

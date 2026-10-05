@@ -55,11 +55,11 @@ DevTranspose::DevTranspose()
 
 DevTranspose::~DevTranspose() = default;
 
-void DevTranspose::configureGt2(const GuitarTransposeV2::Config& cfg)
+void DevTranspose::configureGt2(const GuitarTranspose::Config& cfg)
 {
   // Validate now (off-RT): trial reset on a scratch engine at the live
   // rate when known, else 48 kHz. Throws std::invalid_argument like GT2.
-  GuitarTransposeV2 probe;
+  GuitarTranspose probe;
   probe.setConfig(cfg);
   probe.setEnabled(true);
   probe.setShiftSt(shiftReq_.load(std::memory_order_relaxed));

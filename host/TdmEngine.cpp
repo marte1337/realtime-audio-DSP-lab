@@ -21,7 +21,7 @@
 #include "dsp/lab/bench/BenchRubberBand.h" // BENCH AUDITION only (cpp-local)
 #include "dsp/lab/bench/BenchShifter.h"
 #include "dsp/lab/bench/BenchTone3000.h"
-#include "dsp/lab/Pitch/GuitarTransposeV2.h" // GT2 LAB AUDITION only (cpp-local)
+#include "dsp/Pitch/GuitarTranspose.h" // GT2 LAB AUDITION only (cpp-local)
 #endif
 #include "host/BufferRequest.h" // pure request validation (no HAL here)
 
@@ -187,7 +187,7 @@ struct TdmEngine::Hal
 #ifdef TDM_BENCH_LIVE
   std::unique_ptr<tdm::bench::BenchShifter> bench; // BENCH AUDITION: pre-rig, output thread only
   bool benchOn = false; // armed at start(), immutable while running
-  tdm::lab::GuitarTransposeV2 gt2; // GT2 LAB AUDITION: pre-rig, output thread only
+  tdm::GuitarTranspose gt2; // GT2 LAB AUDITION: pre-rig, output thread only
   bool gt2On = false; // armed at start(), immutable while running
 #endif
   int inChannels = 0;

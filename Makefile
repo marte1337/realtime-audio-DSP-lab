@@ -32,7 +32,7 @@ NAM_FLAGS := $(STD) $(OPT) -w $(DEFS) -I$(NAM_CORE_DIR) -I$(EIGEN_DIR) -I$(JSON_
 NAM_SRCS := $(wildcard $(NAM_CORE_DIR)/NAM/*.cpp) $(wildcard $(NAM_CORE_DIR)/NAM/wavenet/*.cpp)
 NAM_OBJS := $(patsubst $(NAM_CORE_DIR)/%.cpp,$(NAMOBJ)/%.o,$(NAM_SRCS))
 
-TDM_SRCS := dsp/NamStage.cpp dsp/CabIrStage.cpp dsp/WavFile.cpp dsp/TechDeathRig.cpp dsp/Gate/TechDeathGate.cpp dsp/InputTrim.cpp dsp/TightDrive/TightDrive.cpp dsp/ToneShape/ToneShape.cpp dsp/Space/Delay.cpp dsp/Space/Reverb.cpp dsp/Space/SpaceProcessor.cpp dsp/OutputTrim.cpp
+TDM_SRCS := dsp/NamStage.cpp dsp/CabIrStage.cpp dsp/WavFile.cpp dsp/TechDeathRig.cpp dsp/Gate/TechDeathGate.cpp dsp/InputTrim.cpp dsp/Pitch/GuitarTranspose.cpp dsp/TightDrive/TightDrive.cpp dsp/ToneShape/ToneShape.cpp dsp/Space/Delay.cpp dsp/Space/Reverb.cpp dsp/Space/SpaceProcessor.cpp dsp/OutputTrim.cpp
 TDM_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TDM_SRCS))
 
 # Live-audio host layer (CoreAudio duplex). Kept OUT of TDM_OBJS so the
@@ -47,14 +47,17 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(BUILD)/transpose-dev/host/dev/TdmDevApp.o
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 # Lab pitch prototype: standalone offline tool, deliberately NOT linked into
 # the rig, tests of the rig, or the dev app. Shares only WavFile + LabFft.
 LABPITCH_SRCS := dsp/lab/Pitch/LabFft.cpp dsp/lab/Pitch/LabPitchShift.cpp dsp/lab/Pitch/LabCrossover.cpp dsp/lab/Pitch/LabMultiPitch.cpp dsp/lab/Pitch/LabWsolaShift.cpp dsp/lab/Pitch/LabPitchV2.cpp dsp/lab/Pitch/LabWsolaV2.cpp dsp/lab/Pitch/LabPitchRender.cpp
 LABPITCH_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(LABPITCH_SRCS))
-LABPITCH_LIB := $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/lab/Pitch/LabPitchShift.o $(BUILD)/dsp/lab/Pitch/LabCrossover.o $(BUILD)/dsp/lab/Pitch/LabMultiPitch.o $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o $(BUILD)/dsp/lab/Pitch/LabPitchV2.o $(BUILD)/dsp/lab/Pitch/LabWsolaV2.o $(BUILD)/dsp/lab/Pitch/GuitarTransposeV2.o
+# NOTE: the promoted production engine (dsp/Pitch/GuitarTranspose.o) is NOT
+# listed here; tests link it via TDM_OBJS (listing it twice would duplicate
+# symbols at link time).
+LABPITCH_LIB := $(BUILD)/dsp/lab/Pitch/LabFft.o $(BUILD)/dsp/lab/Pitch/LabPitchShift.o $(BUILD)/dsp/lab/Pitch/LabCrossover.o $(BUILD)/dsp/lab/Pitch/LabMultiPitch.o $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o $(BUILD)/dsp/lab/Pitch/LabPitchV2.o $(BUILD)/dsp/lab/Pitch/LabWsolaV2.o
 
 # LAB AUDITION wrapper (temporary): linked into the live/dev hosts (which own
 # the TdmEngine insert) and the tests. NOT linked into the rig or tdm_render.
@@ -111,13 +114,14 @@ T3K_FRAMEWORKS := -framework Cocoa -framework Foundation -framework IOKit -frame
 T3K_LIBS := -lz
 
 # DEV transpose A/B objects. DevTranspose.cpp compiles TWICE: once plain
-# (GT2-only, no JUCE) for tdm_tests via the generic rule, and once with
-# -DTDM_HAVE_TONE3000 (+ TONE3000/JUCE includes) for tdm_transpose_dev.
-# Production targets (tdm_live, tdm_render, tdm_dev) link neither.
+# (ours-only, no JUCE) for tdm_tests via the generic rule, and once with
+# -DTDM_HAVE_TONE3000 (+ TONE3000/JUCE includes) for tdm_transpose_dev and
+# tdm_dev. Production targets (tdm_live, tdm_render) link neither; they run
+# the production engine (dsp/Pitch) owned by the rig.
 DEVTRANSPOSE_TEST_OBJ := $(BUILD)/dsp/lab/Pitch/DevTranspose.o
 DEVTRANSPOSE_STAGE_OBJ := $(BUILD)/transpose-dev/dsp/lab/Pitch/DevTranspose.o
 DEVTRANSPOSE_DEV_OBJS := $(DEVTRANSPOSE_STAGE_OBJ) $(BUILD)/transpose-dev/app/TdmTransposeDev.o
-GT2_OBJ := $(BUILD)/dsp/lab/Pitch/GuitarTransposeV2.o
+GT2_OBJ := $(BUILD)/dsp/Pitch/GuitarTranspose.o
 
 .PHONY: all test smoke clean check-deps check-bench-deps check-t3k-deps
 all: check-deps $(BUILD)/tdm_tests $(BUILD)/tdm_render $(BUILD)/tdm_live $(BUILD)/tdm_dev
@@ -193,7 +197,7 @@ $(BUILD)/tdm_render: $(TDM_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmRender.o
 $(BUILD)/tdm_live: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(BUILD)/app/TdmLive.o
 	$(CXX) $(STD) $^ $(FRAMEWORKS) -o $@
 
-$(BUILD)/tdm_dev: check-t3k-deps $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(DEV_OBJS) $(DEVTRANSPOSE_STAGE_OBJ) $(GT2_OBJ) $(T3K_OBJS)
+$(BUILD)/tdm_dev: check-t3k-deps $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(DEV_OBJS) $(DEVTRANSPOSE_STAGE_OBJ) $(T3K_OBJS)
 	$(CXX) $(STD) $(filter-out check-t3k-deps,$^) $(DEV_FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
 
 $(BUILD)/tdm_labpitch: $(LABPITCH_OBJS) $(BUILD)/dsp/WavFile.o
@@ -242,14 +246,14 @@ $(BUILD)/bench-live/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(TDM_FLAGS) $(BENCH_INCS) -DTDM_BENCH_LIVE -c $< -o $@
 
-$(BUILD)/tdm_bench_live: $(TDM_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(BENCHLIVE_OBJS) $(BENCH_OBJS) $(T3K_SHIM_OBJS) $(BENCH_EXT_OBJS) $(T3K_OBJS) $(BUILD)/dsp/lab/Pitch/GuitarTransposeV2.o
+$(BUILD)/tdm_bench_live: $(TDM_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(BENCHLIVE_OBJS) $(BENCH_OBJS) $(T3K_SHIM_OBJS) $(BENCH_EXT_OBJS) $(T3K_OBJS)
 	$(CXX) $(STD) $^ $(FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
 
 bench-live: check-bench-deps check-t3k-deps $(BUILD)/tdm_bench_live
 
-# GuitarTransposeV2 promotion study (lab only, not in `all`): GT2 vs
+# Production-engine study (lab only, not in `all`): our GuitarTranspose vs
 # actual TONE3000 t3k30 vs W20/E20 on the same material/metrics.
-$(BUILD)/tdm_gt2_study: $(BUILD)/dsp/lab/Pitch/GuitarTransposeStudy.o $(BUILD)/dsp/lab/Pitch/GuitarTransposeV2.o $(T3K_SHIM_OBJS) $(T3K_OBJS) $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o $(BUILD)/dsp/WavFile.o
+$(BUILD)/tdm_gt2_study: $(BUILD)/dsp/lab/Pitch/GuitarTransposeStudy.o $(GT2_OBJ) $(T3K_SHIM_OBJS) $(T3K_OBJS) $(BUILD)/dsp/lab/Pitch/LabWsolaShift.o $(BUILD)/dsp/WavFile.o
 	$(CXX) $(STD) $^ -o $@ $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS)
 
 gt2-study: check-t3k-deps $(BUILD)/tdm_gt2_study
@@ -266,7 +270,7 @@ $(BUILD)/transpose-dev/%.o: %.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(TDM_FLAGS) $(T3K_INCS) $(T3K_DEFS) -DTDM_HAVE_TONE3000 -fobjc-arc -c $< -o $@
 
-$(BUILD)/tdm_transpose_dev: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(DEVTRANSPOSE_DEV_OBJS) $(GT2_OBJ) $(T3K_OBJS)
+$(BUILD)/tdm_transpose_dev: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(DEVTRANSPOSE_DEV_OBJS) $(T3K_OBJS)
 	$(CXX) $(STD) $^ $(FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
 
 transpose-dev: check-t3k-deps $(BUILD)/tdm_transpose_dev

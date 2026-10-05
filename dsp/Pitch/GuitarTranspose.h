@@ -1,10 +1,14 @@
 #pragma once
 
-// GuitarTransposeV2: guitar-specific variable-delay transpose engine (LAB PROTOTYPE).
+// GuitarTranspose: production guitar transpose engine.
 //
-// Status: experimental candidate in dsp/lab/Pitch/. NOT wired into
-// TechDeathRig / RigParams / tdm_dev. Do not build product architecture
-// on it until real-guitar listening validation passes.
+// Promoted verbatim from the accepted lab baseline (GuitarTransposeV2):
+// same algorithm, same defaults, same renders (see the golden regression
+// in tests/TestGuitarTranspose.cpp). Wired into TechDeathRig between
+// Gate and TightDrive; the validated primary use is fixed detune -1/-2,
+// with -12..+12 available. Do not retune here: this file is the frozen
+// acoustic baseline, and DEV experiments override Config off-RT only
+// (see dsp/lab/Pitch/DevTranspose.h), never by editing these defaults.
 //
 // Algorithm: Doppler pitch shifting with rare waveform-matched splices.
 // One fractional read tap runs through a delay ring at the pitch ratio,
@@ -23,50 +27,57 @@
 // long fades. A guitar onset detector (HF energy vs recent floor and
 // ceiling, with refractory period) re-syncs the tap to the floor region
 // on pick attacks, so attacks emerge a few ms late wherever the tap had
-// drifted. Full-band: no tonality crossover in v1.
+// drifted. Full-band: no tonality crossover. Independent implementation:
+// own code, own constants-as-parameters, no copied source.
 //
-// Why this shape: WSOLA joins every frame (~100/s), and each join
-// rephases chord partials a little - the periodic searching/wobble our
-// studies convicted on sustained chords. Rare large splices move that
-// failure into isolated events spread by long fades; the external
-// reference study (TONE3000 t3k30, same material/metrics) showed this
-// architecture holds DI chord retention near 1.0 with no added AM while
-// keeping attacks early via re-sync. This file is an independent
-// implementation from those architecture findings: own code, own
-// constants-as-parameters, no copied source.
+// Baseline configuration: the Config defaults below ARE the accepted
+// baseline (30 ms window, 2 ms floor, 25 ms correlation, 30-120 ms
+// match-mapped fades, 2 ms / 4 ms re-sync, 600 Hz detector, resync on).
+// Production never calls setConfig: the rig uses a default-constructed
+// engine, so production output cannot drift from the baseline. The DEV
+// transpose stage may install validated Config overrides off-RT (audio
+// stopped, before reset); "Restore Baseline" restores Config{} exactly.
 //
-// Differences from rejected pitch-v1 (dsp/Pitch, stashed): v1 placed
-// wraps from a zero-crossing period tracker (one monophonic period that
-// cannot serve polyphony), masked them with short fixed fades, and had
-// no onset handling - wraps landed on attacks and fragmented. This
-// engine places splices by composite-waveform correlation (no period
-// assumption of any kind), fades 30-120 ms by match quality with
-// correlation-normalized gains, and re-syncs onsets to the floor.
+// Shift range: the engine accepts [kMinShiftSt, kMaxShiftSt] (-24/+12);
+// production exposes -12..+12 through RigParams (clamped at the rig).
+// Downshift is primary; dives adopt per sample (a pending search is
+// dropped on change, with a synchronous fallback search if the tap then
+// reaches the boundary unplanned). Upshift uses landing-range budgeting
+// (validated to +12, beyond untested). reset() clears state
+// deterministically. Caveat: reset() at exactly 0.0 st selects a
+// zero-latency wire (bypass0_) that ignores later live shifts until the
+// next reset; the production rig avoids it by priming the engine at a
+// nonzero shift when the requested shift is 0 (inaudible: the rig's
+// bypass wrapper outputs latency-matched dry at shift 0 regardless).
 //
-// Shift range: downshift primary ([kMinShiftSt, 0], dive-down sweeps
-// architecturally supported: the ratio is adopted per sample and a
-// pending search is simply dropped on change, with a synchronous
-// fallback search if the tap then reaches the boundary unplanned).
-// Upshift mirror implemented with landing-range budgeting (fades and
-// search lead scale down together to preserve half the buffer for
-// landings); validated to +12, beyond untested. Shift takes effect
-// live (per-sample adoption); reset() clears all state deterministically.
+// Latency (all post-reset figures, baseline 30 ms window @ 48 kHz):
+// - nominal reported latency: (floor + window) / 2 = 768 samples
+//   (16 ms). THE stable host/rig figure (latencySamples()); it never
+//   varies per note.
+// - instantaneous tap delay: rides between floor (96) and window (1440)
+//   as sustains drift; this is where any single output sample sat, not
+//   a reportable number.
+// - onset re-sync emergence: about floor + span + fade = 384 samples
+//   (8 ms, see onsetLatencySamples()); attacks arrive earlier than the
+//   nominal figure, perceptually only.
+// - engine bypass (disabled, or exact-0-st reset): bit-exact zero-
+//   latency wire. The RIG never uses this live: its bypass wrapper
+//   outputs dry delayed by the nominal latency (constant feel) with a
+//   128-sample ramp, and an exact wire only while fully disengaged.
+// tailSamples() is 0: fully causal, no flush requirement. Offline
+// callers feed latencySamples() extra zeros and drop the first
+// latencySamples() outputs; attacks inside the dropped head start are
+// affected by priming like any delay line.
 //
-// Latency: variable by design. Sustains ride the tap between floor and
-// buffer end (mean (floor+buffer)/2, reported by latencySamples() as
-// the host-reportable figure); attacks that re-sync emerge at about
-// floor + span + fade (see onsetLatencySamples()). Exactly 0.0 st is a
-// bit-exact zero-latency bypass (house convention). tailSamples() is 0:
-// fully causal, no flush requirement. Offline callers feed
-// latencySamples() extra zeros and drop the first latencySamples()
-// outputs; attacks inside the dropped head start are affected by
-// priming like any delay line.
-//
-// Realtime contract: setConfig/setShiftSt/setEnabled/reset are off-RT
-// (reset allocates the rings); processBlock is RT-safe (no allocation,
-// no locks, no I/O, deterministic). Worst-case per-sample cost is a
-// bounded NCC slice; drift searches spread over a lead, onset searches
-// run at once over a small span (bounded burst, see .cpp).
+// Realtime contract: setConfig/reset are off-RT (reset allocates the
+// rings). setShiftSt/setEnabled are RT-safe (clamp + one bounded pow /
+// plain store; the rig calls them at block boundaries). processBlock is
+// RT-safe (no allocation, no locks, no I/O, deterministic). Worst-case
+// per-sample cost is a bounded NCC slice; drift searches spread over a
+// lead, onset searches run at once over a small span (bounded burst).
+// Telemetry/event counters update on the audio path (plain member
+// writes, no allocation); the diagnostic trace stays off unless an
+// offline instrument enables it.
 //
 // Expected signal range: finite floats, nominally DI guitar in [-1, 1].
 // Output peak is bounded by roughly the input peak (crossfades only
@@ -77,22 +88,24 @@
 
 namespace tdm
 {
-namespace lab
-{
-class GuitarTransposeV2
+class GuitarTranspose
 {
 public:
   static constexpr float kMinShiftSt = -24.0f;
   static constexpr float kMaxShiftSt = 12.0f; // upshift budgeted to +12; beyond untested
   static constexpr float kDefaultShiftSt = 0.0f;
+  // Production product range (enforced by TechDeathRig/RigParams; the wider
+  // engine range above stays available to DEV/study harnesses only).
+  static constexpr float kProductionMinShiftSt = -12.0f;
+  static constexpr float kProductionMaxShiftSt = 12.0f;
 
   // Timing/geometry configuration. All times in ms (rate-independent);
   // sample counts derive at reset(). Every field is validated there
-  // (throws std::invalid_argument) so the study harness can sweep them.
-  // Defaults are the v1 starting point from the architecture research:
-  // 30 ms-class buffer (the configuration that passed the external
-  // live reference test), floor a few ms, correlation over ~25 ms,
-  // fades 30-120 ms by match, 2 ms re-sync fades.
+  // (throws std::invalid_argument) so DEV/study harnesses can sweep them.
+  // The defaults ARE the accepted production baseline: 30 ms-class
+  // buffer (the configuration that passed hardware validation), floor a
+  // few ms, correlation over ~25 ms, fades 30-120 ms by match, 2 ms
+  // re-sync fades. Production constructs Config{} and never changes it.
   struct Config
   {
     double windowMs = 30.0; // max tap delay (dMax), [10, 120]
@@ -115,10 +128,11 @@ public:
     bool enableResync = true; // false: detector runs+traces, never acts
   };
 
-  GuitarTransposeV2();
+  GuitarTranspose();
 
-  // Lab config: validated at reset(), not here, so fields may be set in
-  // any order. Takes effect on the next reset().
+  // Off-RT config override (DEV/study only; production never calls this):
+  // validated at reset(), not here, so fields may be set in any order.
+  // Takes effect on the next reset().
   void setConfig(const Config& cfg);
   const Config& config() const { return config_; }
 
@@ -156,8 +170,8 @@ public:
   // re-synced attacks by about onsetLatencySamples().
   void processBlock(const float* input, float* output, int numFrames);
 
-  // LAB telemetry (cheap counters + fixed event logs, no allocation,
-  // updated on the audio path, read off-RT).
+  // Telemetry (cheap counters + fixed event logs, no allocation,
+  // updated on the audio path, read off-RT; used by studies + DEV).
   struct Telemetry
   {
     long long samples = 0;
@@ -207,7 +221,7 @@ public:
   SpliceEvent spliceEvent(size_t i) const;
   OnsetEvent onsetEvent(size_t i) const;
 
-  // LAB DIAGNOSTIC detector trace (removable; default OFF). When
+  // DIAGNOSTIC detector trace (removable; default OFF). When
   // enabled (off-RT, before processing), each sample appends envelope +
   // threshold multiples + fired flag. Memory grows per sample: offline
   // instrument only, never on the audio thread. Read-only w.r.t. DSP
@@ -315,5 +329,4 @@ private:
   std::vector<float> traceOverMax_;
   std::vector<char> traceFired_;
 };
-} // namespace lab
 } // namespace tdm

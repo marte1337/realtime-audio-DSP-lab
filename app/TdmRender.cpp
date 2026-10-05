@@ -3,6 +3,7 @@
 // Usage:
 //   tdm_render --in di.wav --out processed.wav [--nam amp.nam] [--ir cab.wav]
 //              [--gate-thresh db] [--gate-rel ms] [--input-trim db]
+//              [--transpose-shift ST]   (production GuitarTranspose, -12..+12)
 //              [--tight-drive] [--tight 0..1] [--drive 0..1] [--bite 0..1]
 //              [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]
 //              [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]
@@ -11,6 +12,9 @@
 //
 // Passing either gate flag enables TechDeathGate (the other keeps its
 // default); without gate flags the gate bypasses exactly (Milestone 0 path).
+// Passing --transpose-shift enables the production GuitarTranspose at that
+// shift (baseline config); validated primary use is -1/-2, flag takes
+// -12..+12 (clamped).
 // Passing --tight-drive or any of --tight/--drive/--bite enables TightDrive
 // (unspecified params keep their defaults); otherwise it bypasses exactly.
 // Passing --tone-shape or any of --weight/--contour/--presence enables
@@ -42,6 +46,7 @@ void usage()
               "       [--tone-shape] [--weight 0..1] [--contour 0..1] [--presence 0..1]\n"
               "       [--delay] [--delay-time ms] [--delay-fb 0..0.85] [--delay-mix 0..1]\n"
               "       [--reverb] [--reverb-decay 0..1] [--reverb-mix 0..1]\n"
+              "       [--transpose-shift ST]\n"
               "       [--output-trim db]\n");
 }
 } // namespace
@@ -51,6 +56,7 @@ int main(int argc, char** argv)
   std::string inPath, outPath, namPath, irPath, gateThresh, gateRel, inputTrim;
   std::string tight, drive, bite, weight, contour, presence, outputTrim;
   std::string delayTime, delayFb, delayMix, reverbDecay, reverbMix;
+  std::string transposeShift;
   bool driveEnable = false, shapeEnable = false, delayEnable = false, reverbEnable = false;
   for (int i = 1; i < argc; ++i)
   {
@@ -78,6 +84,8 @@ int main(int argc, char** argv)
       need("--gate-rel", gateRel);
     else if (a == "--input-trim")
       need("--input-trim", inputTrim);
+    else if (a == "--transpose-shift")
+      need("--transpose-shift", transposeShift);
     else if (a == "--tight-drive")
       driveEnable = true;
     else if (a == "--tight")
@@ -137,6 +145,11 @@ int main(int argc, char** argv)
       if (!gateRel.empty())
         rig.setGateReleaseMs(std::stof(gateRel));
       rig.setGateEnabled(true);
+    }
+    if (!transposeShift.empty())
+    {
+      rig.setTransposeSemitones(std::stof(transposeShift));
+      rig.setTransposeEnabled(true);
     }
     if (driveEnable || !tight.empty() || !drive.empty() || !bite.empty())
     {
@@ -200,10 +213,16 @@ int main(int argc, char** argv)
       if (std::fabs(v) > peak)
         peak = std::fabs(v);
     tdm::writeWavFloat32(outPath, const_cast<const float**>(outPtrs), 1, total, in.sampleRate);
-    std::printf("rendered %d frames @ %.0f Hz (nam=%s ir=%s gate=%s trim=%.1f drive=%s shape=%s delay=%s reverb=%s out trim=%.1f) peak=%.4f -> %s\n",
+    char transposeDesc[32];
+    if (rig.isTransposeEnabled())
+      std::snprintf(transposeDesc, sizeof(transposeDesc), "%.1f st", (double)rig.transposeSemitones());
+    else
+      std::snprintf(transposeDesc, sizeof(transposeDesc), "off");
+    std::printf("rendered %d frames @ %.0f Hz (nam=%s ir=%s gate=%s trim=%.1f transpose=%s drive=%s shape=%s "
+                "delay=%s reverb=%s out trim=%.1f) peak=%.4f -> %s\n",
                 total, in.sampleRate, namPath.empty() ? "-" : namPath.c_str(),
                 irPath.empty() ? "-" : irPath.c_str(), rig.isGateEnabled() ? "on" : "off", rig.inputTrimDb(),
-                rig.isDriveEnabled() ? "on" : "off", rig.isShapeEnabled() ? "on" : "off",
+                transposeDesc, rig.isDriveEnabled() ? "on" : "off", rig.isShapeEnabled() ? "on" : "off",
                 rig.isDelayEnabled() ? "on" : "off", rig.isReverbEnabled() ? "on" : "off",
                 rig.outputTrimDb(), peak, outPath.c_str());
     return 0;

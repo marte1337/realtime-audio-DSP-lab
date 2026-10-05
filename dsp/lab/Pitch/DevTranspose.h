@@ -2,10 +2,13 @@
 
 // DevTranspose: DEV-only A/B transpose stage (LAB/DEV, never production).
 //
-// Holds OUR GuitarTransposeV2 and the frozen TONE3000 reference engine side
-// by side behind the TechDeathRig transpose seam (Gate -> transpose ->
-// TightDrive). Exactly one engine feeds the rig at a time; the selector
-// never touches unrelated rig state and each engine keeps its own config.
+// Holds OUR production GuitarTranspose engine (dsp/Pitch) and the frozen
+// TONE3000 reference engine side by side behind the TechDeathRig
+// transpose seam (Gate -> transpose -> TightDrive). Exactly one engine
+// feeds the rig at a time; the selector never touches unrelated rig
+// state and each engine keeps its own config. The "ours" side IS the
+// production DSP (same class the rig owns); DEV adds only the A/B
+// wrapper, the reference engine, and off-RT Config overrides.
 //
 // Engine availability depends on the build:
 // - tdm_transpose_dev defines TDM_HAVE_TONE3000: both engines live.
@@ -32,7 +35,7 @@
 // OUR GT2 DEV controls (OFF-RT ONLY: validated at configure time, take
 // effect on the next reset()/start; changing them needs an audio restart
 // because GT2 derives geometry and allocates rings at reset):
-// - the full GuitarTransposeV2::Config (window/floor/corr/fades/thresholds/
+// - the full GuitarTranspose::Config (window/floor/corr/fades/thresholds/
 //   onset detector/refractory/history/resync). Every field is validated and
 //   clamped; unknown fields are never invented. knownGoodGt2() returns the
 //   exact Config that passed the hardware audition (the GT2 defaults).
@@ -50,7 +53,7 @@
 #include <vector>
 
 #include "dsp/TransposeInsert.h"
-#include "dsp/lab/Pitch/GuitarTransposeV2.h"
+#include "dsp/Pitch/GuitarTranspose.h"
 
 namespace tdm
 {
@@ -71,9 +74,11 @@ public:
   static constexpr int kDefaultT3kWindowMs = 30;
   static constexpr float kDefaultT3kTonalityHz = 0.0f; // off
 
-  // Exact GT2 configuration that passed the hardware audition. Returned by
-  // value; compare field-wise in tests to catch drift.
-  static GuitarTransposeV2::Config knownGoodGt2() { return GuitarTransposeV2::Config{}; }
+  // Exact GT2 configuration that passed the hardware audition: the
+  // PRODUCTION baseline (GuitarTranspose::Config{}), single-sourced.
+  // "Restore GT2 Baseline" restores exactly what production runs.
+  // Returned by value; compare field-wise in tests to catch drift.
+  static GuitarTranspose::Config knownGoodGt2() { return GuitarTranspose::Config{}; }
   static bool hasTone3000()
   {
 #ifdef TDM_HAVE_TONE3000
@@ -91,9 +96,9 @@ public:
 
   // ---- OFF-RT GT2 configuration (audio stopped; takes effect on reset) ----
   // Validated immediately (throws std::invalid_argument); stored on success.
-  void configureGt2(const GuitarTransposeV2::Config& cfg);
+  void configureGt2(const GuitarTranspose::Config& cfg);
   void resetGt2ToBaseline() { configureGt2(knownGoodGt2()); }
-  const GuitarTransposeV2::Config& gt2Config() const { return gt2Cfg_; }
+  const GuitarTranspose::Config& gt2Config() const { return gt2Cfg_; }
   // Standby warming (off-RT): when true (default) both engines render every
   // block so A/B switches are immediate; when false only the active engine
   // renders (production-like CPU, cold standby after a switch).
@@ -136,8 +141,8 @@ private:
   int activeLatency() const; // audio-thread: selected engine's current latency
   int bypassLatency() const; // audio-thread: dry delay for the bypass path
 
-  GuitarTransposeV2 gt2_;
-  GuitarTransposeV2::Config gt2Cfg_; // off-RT only
+  GuitarTranspose gt2_;
+  GuitarTranspose::Config gt2Cfg_; // off-RT only
   bool warmStandby_ = true; // off-RT only
 
 #ifdef TDM_HAVE_TONE3000

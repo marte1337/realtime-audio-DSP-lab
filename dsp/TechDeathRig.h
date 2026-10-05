@@ -1,10 +1,13 @@
 #pragma once
 
-// Rig: Input -> Input Trim -> TechDeathGate -> [optional DEV transpose] ->
+// Rig: Input -> Input Trim -> TechDeathGate -> GuitarTranspose ->
 //   TightDrive -> NAM A2 -> Cabinet IR -> ToneShape -> Space -> Output Trim
-//   -> Output. The transpose seam is null by default (production path is
-//   bit-identical with or without the seam); only DEV/benchmark hosts
-//   install an insert (see dsp/TransposeInsert.h).
+//   -> Output. GuitarTranspose is OUR production pitch engine at its
+//   accepted baseline config (see dsp/Pitch/GuitarTranspose.h); it is
+//   disengaged by default, in which case the rig path is bit-identical
+//   with or without it. A DEV-only insert may SUBSTITUTE for the
+//   production transpose at the same position (see setTransposeInsert);
+//   production hosts never install one.
 //
 // Everything through ToneShape is mono (multi-channel input is averaged
 // to mono: avoids the +6 dB surprise of summing; stereo width tricks come
@@ -14,6 +17,9 @@
 // the pair cyclically.
 // Stages without a loaded asset bypass transparently; the gate bypasses
 // exactly until explicitly enabled, preserving Milestone 0 behavior.
+// Transpose disengaged is an exact wire; engaged it runs wet at nonzero
+// shift or latency-matched dry at shift 0 (constant feel, 128-sample
+// ramps; see the transpose notes below).
 // Input Trim defaults to 0 dB, at which it passes input bit-exactly.
 // TightDrive is disabled by default and bypasses exactly when off.
 // ToneShape is disabled by default and bypasses exactly when off (and is
@@ -25,8 +31,9 @@
 //
 // Threading contract (developer-app era, DSP algorithms untouched):
 // - The atomic parameter setters below (setGateEnabled, setGateThresholdDb,
-//   setGateReleaseMs, setInputTrimDb, setDriveEnabled, setTight, setDrive,
-//   setBite, setShapeEnabled, setWeight, setContour, setPresence,
+//   setGateReleaseMs, setInputTrimDb, setTransposeEnabled,
+//   setTransposeSemitones, setDriveEnabled, setTight, setDrive, setBite,
+//   setShapeEnabled, setWeight, setContour, setPresence,
 //   setDelayEnabled, setDelayTimeMs, setDelayFeedback, setDelayMix,
 //   setReverbEnabled, setReverbDecay, setReverbMix, setOutputTrimDb,
 //   setParams) are safe to call from ANY thread,
@@ -46,12 +53,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <string>
 #include <vector>
 
 #include "dsp/CabIrStage.h"
 #include "dsp/InputTrim.h"
 #include "dsp/NamStage.h"
+#include "dsp/Pitch/GuitarTranspose.h"
 #include "dsp/RigParams.h"
 #include "dsp/TransposeInsert.h"
 #include "dsp/Gate/TechDeathGate.h"
@@ -102,6 +111,27 @@ public:
   bool isGateEnabled() const { return gateEnabled_.load(std::memory_order_relaxed); }
   float gateThresholdDb() const { return gateThreshDb_.load(std::memory_order_relaxed); }
   float gateReleaseMs() const { return gateRelMs_.load(std::memory_order_relaxed); }
+
+  // Production transpose controls. Disengaged by default (exact wire).
+  // Engaged: wet transpose at nonzero shift, latency-matched dry at shift
+  // 0 (constant nominal latency while engaged; never bypass-as-shift-0).
+  // Semitones clamp to the production range; NaN parks at 0 st, infinities
+  // at the rails. Live-safe: applied at block boundaries, 128-sample
+  // engage/wet ramps, no clicks, no unrelated state touched.
+  void setTransposeEnabled(bool enabled) { transposeEnabled_.store(enabled, std::memory_order_relaxed); }
+  void setTransposeSemitones(float st)
+  {
+    const float s = std::isnan(st) ? GuitarTranspose::kDefaultShiftSt
+                                   : std::clamp(st, GuitarTranspose::kProductionMinShiftSt,
+                                                GuitarTranspose::kProductionMaxShiftSt);
+    transposeSt_.store(s, std::memory_order_relaxed);
+  }
+  bool isTransposeEnabled() const { return transposeEnabled_.load(std::memory_order_relaxed); }
+  float transposeSemitones() const { return transposeSt_.load(std::memory_order_relaxed); }
+  // Nominal transpose latency in samples, valid post-reset (768 @ 48 kHz
+  // baseline; 0 before reset). The stable reported figure for the engaged
+  // path; the disengaged tap is an exact zero-latency wire.
+  int transposeLatencySamples() const { return transposeLatency_; }
 
   // Input Trim control. Defaults to 0 dB, which passes input bit-exactly
   // and preserves Milestone 0 behavior.
@@ -198,10 +228,12 @@ public:
   void setParams(const RigParams& p);
 
   // DEV transpose seam (OFF-RT ONLY: call with audio stopped, before start).
-  // Installs a non-owning mono insert between Gate and TightDrive. Null
-  // (the default) preserves the production path bit-exactly. The pointed-to
-  // insert must outlive the rig's use of it; reset() forwards to it when set.
-  // Production hosts never call this; only DEV/benchmark binaries do.
+  // Installs a non-owning mono insert that SUBSTITUTES for the production
+  // transpose at the Gate -> transpose -> TightDrive position (the DEV A/B
+  // stage: our production engine vs the frozen TONE3000 reference). Null
+  // (the default) runs the production transpose path. The pointed-to
+  // insert must outlive the rig's use of it; reset() forwards to it when
+  // set. Production hosts never call this; only DEV binaries do.
   void setTransposeInsert(TransposeInsert* insert) { transpose_ = insert; }
   TransposeInsert* transposeInsert() const { return transpose_; }
 
@@ -215,10 +247,26 @@ private:
   void syncParamsToStages();
   // Audio/reset-thread only: unconditional push (used by reset()).
   void pushAllParamsToStages();
+  // Audio-thread only: production transpose step, in-place (io aliases the
+  // rig mono scratch). Exact wire when disengaged; hot engine + dry ring
+  // with engage/wet ramps when engaged. No-op (wire) before reset().
+  void runTranspose(float* io, int numFrames);
+
+  static constexpr int kTransposeRampSamples = 128; // engage + wet ramps
 
   InputTrim trim_;
   TechDeathGate gate_;
-  TransposeInsert* transpose_ = nullptr; // DEV-only insert, null in production
+  // Production transpose: default-baseline engine (never reconfigured) plus
+  // the bypass wrapper. The engine renders every block (hot) so engagement
+  // is click-free; the output tap selects wire / latency-matched dry / wet.
+  GuitarTranspose transposeEngine_;
+  std::vector<float> transposeWet_; // engine render scratch, sized maxBlock_
+  std::vector<float> transposeDry_; // latency-matching dry ring, sized lat + maxBlock_
+  long long transposeDelayWrite_ = 0;
+  float transposeRamp_ = 0.0f; // 0 = latency-matched dry, 1 = wet
+  float transposeEngage_ = 0.0f; // 0 = exact wire, 1 = transpose path
+  int transposeLatency_ = 0; // nominal engine latency post-reset (768 @ 48 kHz)
+  TransposeInsert* transpose_ = nullptr; // DEV-only substitute, null in production
   TightDrive drive_;
   NamStage nam_;
   CabIrStage ir_;
@@ -244,6 +292,8 @@ private:
   std::atomic<bool> gateEnabled_{false};
   std::atomic<float> gateThreshDb_{TechDeathGate::kDefaultThresholdDb};
   std::atomic<float> gateRelMs_{TechDeathGate::kDefaultReleaseMs};
+  std::atomic<bool> transposeEnabled_{false};
+  std::atomic<float> transposeSt_{GuitarTranspose::kDefaultShiftSt};
   std::atomic<bool> driveEnabled_{false};
   std::atomic<float> tightParam_{TightDrive::kDefaultTight};
   std::atomic<float> driveParam_{TightDrive::kDefaultDrive};
@@ -266,6 +316,8 @@ private:
   bool appliedGateEnabled_ = false;
   float appliedGateThreshDb_ = TechDeathGate::kDefaultThresholdDb;
   float appliedGateRelMs_ = TechDeathGate::kDefaultReleaseMs;
+  bool appliedTransposeEnabled_ = false;
+  float appliedTransposeSt_ = GuitarTranspose::kDefaultShiftSt;
   bool appliedDriveEnabled_ = false;
   float appliedTight_ = TightDrive::kDefaultTight;
   float appliedDrive_ = TightDrive::kDefaultDrive;

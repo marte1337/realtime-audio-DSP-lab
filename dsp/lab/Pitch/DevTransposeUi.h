@@ -4,14 +4,14 @@
 // stage (LAB/DEV, never production).
 //
 // The AppKit developer app and the headless unit tests share this table so
-// control values map to DevTranspose/GuitarTransposeV2 identically in both.
+// control values map to DevTranspose/GuitarTranspose identically in both.
 // It intentionally contains no UI toolkit types: plain structs + inline
-// range-checked accessors over GuitarTransposeV2::Config.
+// range-checked accessors over GuitarTranspose::Config.
 //
 // Contents:
 // - the 17 GT2 Config fields as an ordered descriptor table (key, label,
 //   unit, per-field min/max/step/decimals, bool flag). Ranges mirror the
-//   validation in GuitarTransposeV2::reset(); cross-field relations
+//   validation in GuitarTranspose::reset(); cross-field relations
 //   (fadeMax >= fadeMin, floor < window, nccHi > nccLo, skip < cells) are
 //   enforced by DevTranspose::configureGt2, not here.
 // - baseline comparison against DevTranspose::knownGoodGt2().
@@ -20,7 +20,7 @@
 // Nothing here is called from the audio callback.
 
 #include "dsp/lab/Pitch/DevTranspose.h"
-#include "dsp/lab/Pitch/GuitarTransposeV2.h"
+#include "dsp/Pitch/GuitarTranspose.h"
 
 namespace tdm
 {
@@ -71,7 +71,7 @@ inline const Gt2UiField& devGt2UiField(int i)
 }
 
 // Read numeric field i from a config.
-inline double devGt2UiGet(const GuitarTransposeV2::Config& cfg, int i)
+inline double devGt2UiGet(const GuitarTranspose::Config& cfg, int i)
 {
   switch (i)
   {
@@ -119,7 +119,7 @@ inline double devGt2UiGet(const GuitarTransposeV2::Config& cfg, int i)
 // fields (cells/skip) round to nearest. Cross-field relations are NOT
 // checked here: callers validate the whole config via
 // DevTranspose::configureGt2 before storing it.
-inline bool devGt2UiSet(GuitarTransposeV2::Config& cfg, int i, double v)
+inline bool devGt2UiSet(GuitarTranspose::Config& cfg, int i, double v)
 {
   if (i < 0 || i >= devGt2UiFieldCount())
     return false;
@@ -186,9 +186,9 @@ inline bool devGt2UiSet(GuitarTransposeV2::Config& cfg, int i, double v)
 }
 
 // Exact baseline comparison (all 17 Config fields incl. enableResync).
-inline bool devGt2UiIsBaseline(const GuitarTransposeV2::Config& cfg)
+inline bool devGt2UiIsBaseline(const GuitarTranspose::Config& cfg)
 {
-  const GuitarTransposeV2::Config base = DevTranspose::knownGoodGt2();
+  const GuitarTranspose::Config base = DevTranspose::knownGoodGt2();
   return cfg.windowMs == base.windowMs && cfg.floorMs == base.floorMs && cfg.corrMs == base.corrMs
       && cfg.fadeMinMs == base.fadeMinMs && cfg.fadeMaxMs == base.fadeMaxMs
       && cfg.fadeNccHi == base.fadeNccHi && cfg.fadeNccLo == base.fadeNccLo

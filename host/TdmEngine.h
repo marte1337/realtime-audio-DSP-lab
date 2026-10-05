@@ -107,7 +107,7 @@ public:
   // a lab shifter pre-rig insert (control thread, pre-start; takes
   // effect on start()). id selects the engine ("rb2" = Rubber Band R2
   // realtime, "t3k30" = TONE3000 Transpose 30 ms, "gt2" = our own
-  // GuitarTransposeV2); shiftSt must be one of {0,-1,-2,-7}. Unknown
+  // GuitarTranspose); shiftSt must be one of {0,-1,-2,-7}. Unknown
   // id fails start() with a clean error. Fixed for the run:
   // stop/change/start to change it.
   void configureLabBench(const std::string& id, float shiftSt)

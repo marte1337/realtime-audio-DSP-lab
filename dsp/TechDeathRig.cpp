@@ -1,10 +1,21 @@
 #include "dsp/TechDeathRig.h"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 
 namespace tdm
 {
+namespace
+{
+// Engine priming shift for reset-at-0: the engine's exact-0-st reset mode
+// is a zero-latency wire that would ignore later live shifts, so a
+// requested 0 st resets the engine here instead. Inaudible: the wrapper
+// outputs latency-matched dry at shift 0 regardless of engine state, and
+// live 0 -> N adoption then works without a restart.
+constexpr float kTransposePrimeShiftSt = -2.0f;
+} // namespace
+
 void TechDeathRig::reset(double sampleRate, int maxBlockSize)
 {
   if (sampleRate <= 0.0)
@@ -18,6 +29,18 @@ void TechDeathRig::reset(double sampleRate, int maxBlockSize)
   right_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
   trim_.reset(sampleRate);
   gate_.reset(sampleRate);
+  // Production transpose: default baseline config (never reconfigured),
+  // permanently enabled internally (bypass lives in the wrapper below).
+  {
+    const float wantSt = transposeSt_.load(std::memory_order_relaxed);
+    transposeEngine_.setShiftSt(wantSt == 0.0f ? kTransposePrimeShiftSt : wantSt);
+    transposeEngine_.setEnabled(true);
+    transposeEngine_.reset(sampleRate);
+    transposeLatency_ = transposeEngine_.latencySamples();
+    transposeWet_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
+    transposeDry_.assign(static_cast<size_t>(transposeLatency_ + maxBlockSize), 0.0f);
+    transposeDelayWrite_ = transposeLatency_;
+  }
   if (transpose_ != nullptr)
     transpose_->reset(sampleRate, maxBlockSize);
   drive_.reset(sampleRate);
@@ -53,6 +76,8 @@ RigParams TechDeathRig::params() const
   p.gateEnabled = isGateEnabled();
   p.gateThresholdDb = gateThresholdDb();
   p.gateReleaseMs = gateReleaseMs();
+  p.transposeEnabled = isTransposeEnabled();
+  p.transposeSemitones = transposeSemitones();
   p.driveEnabled = isDriveEnabled();
   p.tight = tight();
   p.drive = drive();
@@ -78,6 +103,8 @@ void TechDeathRig::setParams(const RigParams& p)
   setGateEnabled(p.gateEnabled);
   setGateThresholdDb(p.gateThresholdDb);
   setGateReleaseMs(p.gateReleaseMs);
+  setTransposeEnabled(p.transposeEnabled);
+  setTransposeSemitones(p.transposeSemitones);
   setDriveEnabled(p.driveEnabled);
   setTight(p.tight);
   setDrive(p.drive);
@@ -121,6 +148,17 @@ void TechDeathRig::syncParamsToStages()
   {
     gate_.setReleaseMs(gateRel);
     appliedGateRelMs_ = gateRel;
+  }
+  const bool transposeEn = transposeEnabled_.load(std::memory_order_relaxed);
+  if (transposeEn != appliedTransposeEnabled_)
+    appliedTransposeEnabled_ = transposeEn; // engage ramp moves in runTranspose()
+  const float transposeSt = transposeSt_.load(std::memory_order_relaxed);
+  if (transposeSt != appliedTransposeSt_)
+  {
+    // Live shift adoption (RT-safe: bounded, no alloc). The engine was
+    // primed nonzero at reset, so 0 <-> N moves work without a restart.
+    transposeEngine_.setShiftSt(transposeSt);
+    appliedTransposeSt_ = transposeSt;
   }
   const bool driveEn = driveEnabled_.load(std::memory_order_relaxed);
   if (driveEn != appliedDriveEnabled_)
@@ -248,6 +286,12 @@ void TechDeathRig::pushAllParamsToStages()
   appliedGateEnabled_ = gateEnabled_.load(std::memory_order_relaxed);
   appliedGateThreshDb_ = gateThreshDb_.load(std::memory_order_relaxed);
   appliedGateRelMs_ = gateRelMs_.load(std::memory_order_relaxed);
+  appliedTransposeEnabled_ = transposeEnabled_.load(std::memory_order_relaxed);
+  appliedTransposeSt_ = transposeSt_.load(std::memory_order_relaxed);
+  // Park the transpose ramps at reset (deterministic start: no cross-reset
+  // ramp state). Engine shift itself was set in reset().
+  transposeEngage_ = appliedTransposeEnabled_ ? 1.0f : 0.0f;
+  transposeRamp_ = (appliedTransposeEnabled_ && appliedTransposeSt_ != 0.0f) ? 1.0f : 0.0f;
   appliedDriveEnabled_ = driveEnabled_.load(std::memory_order_relaxed);
   appliedTight_ = tightParam_.load(std::memory_order_relaxed);
   appliedDrive_ = driveParam_.load(std::memory_order_relaxed);
@@ -264,6 +308,69 @@ void TechDeathRig::pushAllParamsToStages()
   appliedReverbDecay_ = reverbDecay_.load(std::memory_order_relaxed);
   appliedReverbMix_ = reverbMix_.load(std::memory_order_relaxed);
   appliedOutTrimDb_ = outTrimDb_.load(std::memory_order_relaxed);
+}
+
+void TechDeathRig::runTranspose(float* io, int numFrames)
+{
+  if (numFrames <= 0 || transposeDry_.empty())
+    return; // pre-reset: wire (io untouched)
+  // Tap dry BEFORE the engine runs (in-place safe), then render the hot
+  // engine into scratch. The engine always runs so engagement never meets
+  // cold rings; the tap below selects wire / dry-late / wet.
+  const int ring = static_cast<int>(transposeDry_.size());
+  for (int i = 0; i < numFrames; ++i)
+    transposeDry_[static_cast<size_t>((transposeDelayWrite_ + i) % ring)] = io[i];
+  transposeEngine_.processBlock(io, transposeWet_.data(), numFrames);
+
+  const float wetTarget = (appliedTransposeEnabled_ && appliedTransposeSt_ != 0.0f) ? 1.0f : 0.0f;
+  const float engageTarget = appliedTransposeEnabled_ ? 1.0f : 0.0f;
+  const int lat = transposeLatency_;
+  // Steady-state fast paths: exact copies, no rounding drift.
+  if (transposeEngage_ == 1.0f && engageTarget == 1.0f)
+  {
+    if (transposeRamp_ == 1.0f && wetTarget == 1.0f)
+    {
+      for (int i = 0; i < numFrames; ++i)
+        io[i] = transposeWet_[static_cast<size_t>(i)];
+      transposeDelayWrite_ += numFrames;
+      return;
+    }
+    if (transposeRamp_ == 0.0f && wetTarget == 0.0f)
+    {
+      for (int i = 0; i < numFrames; ++i)
+        io[i] = transposeDry_[static_cast<size_t>((transposeDelayWrite_ + i - lat) % ring)];
+      transposeDelayWrite_ += numFrames;
+      return;
+    }
+  }
+  else if (transposeEngage_ == 0.0f && engageTarget == 0.0f)
+  {
+    transposeDelayWrite_ += numFrames; // wire: io untouched, ring stays hot
+    return;
+  }
+  // Transitions: per-sample engage + wet ramps (DevTranspose pattern).
+  const float step = 1.0f / static_cast<float>(kTransposeRampSamples);
+  for (int i = 0; i < numFrames; ++i)
+  {
+    if (transposeRamp_ < wetTarget)
+      transposeRamp_ = std::min(wetTarget, transposeRamp_ + step);
+    else if (transposeRamp_ > wetTarget)
+      transposeRamp_ = std::max(wetTarget, transposeRamp_ - step);
+    if (transposeEngage_ < engageTarget)
+      transposeEngage_ = std::min(engageTarget, transposeEngage_ + step);
+    else if (transposeEngage_ > engageTarget)
+      transposeEngage_ = std::max(engageTarget, transposeEngage_ - step);
+    const float dryLate = transposeDry_[static_cast<size_t>((transposeDelayWrite_ + i - lat) % ring)];
+    const float wet = transposeWet_[static_cast<size_t>(i)];
+    const float active = (transposeRamp_ == 1.0f)
+        ? wet
+        : (transposeRamp_ == 0.0f) ? dryLate : dryLate + transposeRamp_ * (wet - dryLate);
+    const float wire = io[i];
+    io[i] = (transposeEngage_ == 1.0f)
+        ? active
+        : (transposeEngage_ == 0.0f) ? wire : wire + transposeEngage_ * (active - wire);
+  }
+  transposeDelayWrite_ += numFrames;
 }
 
 void TechDeathRig::processBlock(const float* const* inputs, int numInputChannels, float* const* outputs,
@@ -293,7 +400,9 @@ void TechDeathRig::processBlock(const float* const* inputs, int numInputChannels
     trim_.processBlock(mono_.data(), mono_.data(), m);
     gate_.processBlock(mono_.data(), mono_.data(), m);
     if (transpose_ != nullptr)
-      transpose_->process(mono_.data(), mono_.data(), m);
+      transpose_->process(mono_.data(), mono_.data(), m); // DEV A/B substitute wins
+    else
+      runTranspose(mono_.data(), m); // production transpose (exact wire when off)
     drive_.processBlock(mono_.data(), mono_.data(), m);
     nam_.processBlock(mono_.data(), mono_.data(), m);
     ir_.processBlock(mono_.data(), mono_.data(), m);

@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-#include "dsp/lab/Pitch/GuitarTransposeV2.h"
+#include "dsp/Pitch/GuitarTranspose.h"
 
 namespace
 {
@@ -69,9 +69,9 @@ double goertzelPower(const float* v, int n, double f)
 
 // Latency-compensated offline run (pad lat+tail, drop lat).
 std::vector<float> runGt2(float shiftSt, const std::vector<float>& in, int block = 256,
-                           const tdm::lab::GuitarTransposeV2::Config* cfg = nullptr)
+                           const tdm::GuitarTranspose::Config* cfg = nullptr)
 {
-  tdm::lab::GuitarTransposeV2 p;
+  tdm::GuitarTranspose p;
   if (cfg)
     p.setConfig(*cfg);
   p.setEnabled(true);
@@ -129,11 +129,113 @@ double rms(const std::vector<float>& v, int from, int to)
     se += static_cast<double>(v[static_cast<size_t>(i)]) * v[static_cast<size_t>(i)];
   return std::sqrt(se / (to - from));
 }
+
+// ---- Golden regression inputs (lab->production promotion guard) ----
+// Fixed synthesis shared with the one-shot generator (/tmp/gt2golden.cpp,
+// run against the accepted pre-move baseline). Do not change these without
+// regenerating the hashes from the accepted engine.
+uint32_t goldenLcg(uint32_t& s)
+{
+  s = s * 1664525u + 1013904223u;
+  return s;
+}
+
+std::vector<float> goldenNote(int n)
+{
+  const int period = static_cast<int>(kSr / 82.41 + 0.5);
+  uint32_t s = 0x51ab3u;
+  std::vector<float> line(static_cast<size_t>(period));
+  for (int i = 0; i < period; ++i)
+    line[static_cast<size_t>(i)] = 2.0f * (goldenLcg(s) & 0xFFFFFF) / float(0xFFFFFF) - 1.0f;
+  std::vector<float> out(static_cast<size_t>(n), 0.0f);
+  int idx = 0;
+  float prev = 0.0f;
+  for (int i = 0; i < n; ++i)
+  {
+    const float cur = line[static_cast<size_t>(idx)];
+    const float v = 0.9998f * 0.5f * (cur + prev);
+    prev = cur;
+    line[static_cast<size_t>(idx)] = v;
+    idx = (idx + 1) % period;
+    out[static_cast<size_t>(i)] = 0.8f * cur;
+  }
+  return out;
+}
+
+std::vector<float> goldenChord(int n)
+{
+  const double freqs[3] = {82.41, 110.0, 146.83};
+  std::vector<float> out(static_cast<size_t>(n), 0.0f);
+  for (int v = 0; v < 3; ++v)
+  {
+    const int period = static_cast<int>(kSr / freqs[v] + 0.5);
+    uint32_t s = 0x1000u + uint32_t(v * 77 + 1);
+    std::vector<float> line(static_cast<size_t>(period));
+    for (int i = 0; i < period; ++i)
+      line[static_cast<size_t>(i)] = 2.0f * (goldenLcg(s) & 0xFFFFFF) / float(0xFFFFFF) - 1.0f;
+    int idx = 0;
+    float prev = 0.0f;
+    for (int i = 0; i < n; ++i)
+    {
+      const float cur = line[static_cast<size_t>(idx)];
+      const float decay = 0.9998f - 0.00002f * v;
+      const float nv = decay * 0.5f * (cur + prev);
+      prev = cur;
+      line[static_cast<size_t>(idx)] = nv;
+      idx = (idx + 1) % period;
+      out[static_cast<size_t>(i)] += 0.3f * cur;
+    }
+  }
+  return out;
+}
+
+std::vector<float> goldenRiff(int n)
+{
+  std::vector<float> out(static_cast<size_t>(n), 0.0f);
+  const int period = static_cast<int>(kSr / 82.41 + 0.5);
+  const int chugLen = static_cast<int>(kSr * 0.125);
+  uint32_t s = 0x77aa1u;
+  for (int c = 0; c * chugLen < n; ++c)
+  {
+    std::vector<float> line(static_cast<size_t>(period));
+    for (int i = 0; i < period; ++i)
+      line[static_cast<size_t>(i)] = 2.0f * (goldenLcg(s) & 0xFFFFFF) / float(0xFFFFFF) - 1.0f;
+    int idx = 0;
+    float prev = 0.0f;
+    const float amp = (c % 4 == 3) ? 0.9f : 0.6f;
+    for (int i = 0; i < chugLen && c * chugLen + i < n; ++i)
+    {
+      const float cur = line[static_cast<size_t>(idx)];
+      const float nv = 0.996f * 0.5f * (cur + prev);
+      prev = cur;
+      line[static_cast<size_t>(idx)] = nv;
+      idx = (idx + 1) % period;
+      const float env = float(i < 96 ? i : 96) / 96.0f;
+      out[static_cast<size_t>(c * chugLen + i)] += amp * env * cur;
+    }
+  }
+  for (int i = 0; i < 480 && n - 960 - 480 + i < n; ++i)
+    out[static_cast<size_t>(n - 960 - 480 + i)] +=
+        0.5f * (2.0f * (goldenLcg(s) & 0xFFFFFF) / float(0xFFFFFF) - 1.0f);
+  return out;
+}
+
+uint64_t goldenHash(const std::vector<float>& v)
+{
+  uint64_t h = 1469598103934665603ULL;
+  const auto* p = reinterpret_cast<const unsigned char*>(v.data());
+  for (size_t i = 0; i < v.size() * sizeof(float); ++i)
+  {
+    h ^= p[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
 } // namespace
 
 void runGuitarTransposeTests()
 {
-  using Gt2 = tdm::lab::GuitarTransposeV2;
+  using Gt2 = tdm::GuitarTranspose;
   // Config validation at reset.
   {
     Gt2 p;
@@ -396,5 +498,41 @@ void runGuitarTransposeTests()
     const double want2 = 220.0 * std::pow(2.0, -2.0 / 12.0);
     const double got2 = peakNear(out, half + 24000, 32768, want2);
     TDM_CHECK_CLOSE(got2, want2, want2 * 0.02, "second half retunes to -2");
+  }
+  // Golden regression: bit-exact output hashes from the accepted baseline
+  // (single note / chord / transient riff at -1, -2, -7). The lab ->
+  // production promotion must not change one bit of these renders.
+  {
+    struct GoldenCase
+    {
+      const char* name;
+      std::vector<float> in;
+      uint64_t wantMinus1;
+      uint64_t wantMinus2;
+      uint64_t wantMinus7;
+    };
+    const int n = 96000;
+    std::vector<GoldenCase> cases;
+    cases.push_back({"note", goldenNote(n), 0x7ca5dc941a2adb04ULL, 0x702b62a772194333ULL, 0xf342427a059ea649ULL});
+    cases.push_back({"chord", goldenChord(n), 0xa65cd4e9b8199f96ULL, 0xac0d253940f5f9d0ULL, 0x0d9794e0dd310a97ULL});
+    cases.push_back({"riff", goldenRiff(n), 0x440ca1e93ed492c9ULL, 0xcae6e2d90fdb7995ULL, 0xcae52ee449b74be1ULL});
+    const float shifts[3] = {-1.0f, -2.0f, -7.0f};
+    for (const auto& c : cases)
+    {
+      const uint64_t wants[3] = {c.wantMinus1, c.wantMinus2, c.wantMinus7};
+      for (int s = 0; s < 3; ++s)
+      {
+        Gt2 p;
+        p.setEnabled(true);
+        p.setShiftSt(shifts[s]);
+        p.reset(kSr);
+        TDM_CHECK(p.latencySamples() == 768, "golden nominal latency 768");
+        std::vector<float> out(static_cast<size_t>(n));
+        for (int off = 0; off < n; off += 256)
+          p.processBlock(c.in.data() + off, out.data() + off, 256);
+        TDM_CHECK(goldenHash(out) == wants[s],
+                  std::string("golden bit-exact ") + c.name + " " + std::to_string(int(shifts[s])));
+      }
+    }
   }
 }
