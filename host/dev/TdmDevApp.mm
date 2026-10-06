@@ -30,6 +30,7 @@
 #include "dsp/RigParams.h"
 #include "dsp/Tuner/Tuner.h"
 #include "dsp/lab/Pitch/DevTranspose.h"
+#include "dsp/lab/Slam/DevSlam.h"
 #include "dsp/lab/Pitch/DevTransposeUi.h"
 #include "host/TdmEngine.h"
 
@@ -127,7 +128,8 @@ enum SliderTag
   kTagReverbMix,
   kTagOutTrim,
   kTagShift, // transpose section: shared shift + T3K tonality (live)
-  kTagT3kTonality
+  kTagT3kTonality,
+  kTagSlamAmount // SLAM section: shared 0..100% macro (live)
 };
 
 // GT2 advanced rows use their own tag band (field index + base) with a
@@ -176,6 +178,8 @@ double resetValueForTag(SliderTag tag)
     return 0.0; // transpose shift default (double-click; live-safe, not bypass)
   case kTagT3kTonality:
     return 0.0; // tonality off
+  case kTagSlamAmount:
+    return 100.0; // SLAM macro default: study reference per flavour
   }
   return 0.0;
 }
@@ -217,6 +221,7 @@ int smokeTest()
     check((float)resetValueForTag(kTagOutTrim) == 0.0f, "reset: output trim -> 0 dB");
     check((float)resetValueForTag(kTagShift) == 0.0f, "reset: shift -> 0 st");
     check((float)resetValueForTag(kTagT3kTonality) == 0.0f, "reset: tonality -> Off");
+    check((float)resetValueForTag(kTagSlamAmount) == 100.0f, "reset: slam amount -> 100%");
     // Double-click behavior on the real control (defined after the control
     // classes below): a synthesized double-click parks the reset value and
     // fires the normal action exactly once.
@@ -504,6 +509,7 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)buildUI;
 - (void)autoQuitAfter:(NSTimeInterval)seconds;
 - (void)refreshTuner; // 10 Hz readout snapshot (tick only)
+- (void)refreshSlamTrig; // 10 Hz Impact trigger LED (tick only)
 // Headless UI-wiring probe (smoke-test only): drives the real transpose
 // controls programmatically and verifies stage state. Needs no audio.
 - (BOOL)runTransposeProbe:(std::string*)detail;
@@ -513,6 +519,10 @@ bool probeDoubleClickReset(std::string& detail)
 // Tuner wiring probe (smoke-test only): drives the tuner checkbox and the
 // rig directly (no audio device) and verifies detection + transparency.
 - (BOOL)runTunerProbe:(std::string*)detail;
+// SLAM wiring probe (smoke-test only): drives the SLAM checkbox, flavour
+// selector, and Amount slider programmatically and verifies router state,
+// Impact telemetry, transparency, and rig-param isolation. Needs no audio.
+- (BOOL)runSlamProbe:(std::string*)detail;
 @end
 
 @implementation DevController
@@ -524,6 +534,15 @@ bool probeDoubleClickReset(std::string& detail)
   // main thread and take effect on the next Start, like NAM/IR).
   tdm::lab::DevTranspose _stage;
   tdm::GuitarTranspose::Config _gt2Applied; // config used at last Start
+  // DEV SLAM router (C++ member: outlives the engine; installed into the
+  // three rig SLAM seams pre-start. UI drives it via atomic setters only,
+  // exactly like the rig handoff; installed-but-off is transparent).
+  tdm::lab::DevSlam _slam;
+  NSButton* _slamCheck;
+  NSSegmentedControl* _slamSeg;
+  NSTextField* _slamTrigLabel;
+  int64_t _slamLastFires;
+  int _slamLitTicks;
   NSWindow* _window;
   NSTextField* _statusLabel;
   NSTextField* _transposeStatus;
@@ -598,11 +617,21 @@ bool probeDoubleClickReset(std::string& detail)
     _stage.setT3kTonalityHz(tdm::lab::DevTranspose::kDefaultT3kTonalityHz);
     _stage.resetGt2ToBaseline();
     _gt2Applied = _stage.gt2Config();
+    // SLAM audition state: off (dry start), Push, 100%. Installed into
+    // all three rig seams pre-start (off-RT); Start/Stop never touches it.
+    _slam.setEnabled(false);
+    _slam.setFlavor(tdm::lab::DevSlam::Flavor::Push);
+    _slam.setAmount01(1.0f);
+    _slamLastFires = 0;
+    _slamLitTicks = 0;
     _lastStepper = 0.0;
     _advShown = 0.0;
     _gt2Open = NO;
     _t3kOpen = NO;
     _engine->rig().setTransposeInsert(&_stage);
+    _engine->rig().setSlamPreDrive(&_slam.preDrive());
+    _engine->rig().setSlamPostNam(&_slam.postNam());
+    _engine->rig().setSlamPostIr(&_slam.postIr());
   }
   return self;
 }
@@ -753,7 +782,7 @@ bool probeDoubleClickReset(std::string& detail)
   _gt2StateLabel = [self makeLabel:@"" frame:NSMakeRect(190, y + 4, cw - 200, 22) small:YES];
   [_gt2Box addSubview:_gt2StateLabel];
   y += 30;
-  _resyncCheck = [NSButton checkboxWithTitle:@"Onset re-sync enable"
+  _resyncCheck = [NSButton checkboxWithTitle:@"Onset re-sync"
                                       target:self
                                       action:@selector(resyncToggled:)];
   _resyncCheck.frame = NSMakeRect(12, y + 2, 220, 22);
@@ -1000,7 +1029,7 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 30;
-  _gateCheck = [NSButton checkboxWithTitle:@"Gate enable" target:self action:@selector(gateToggled:)];
+  _gateCheck = [NSButton checkboxWithTitle:@"Gate" target:self action:@selector(gateToggled:)];
   _gateCheck.frame = NSMakeRect(20, y, 160, 22);
   _gateCheck.state = NSControlStateValueOn; // audition default
   [_docView addSubview:_gateCheck];
@@ -1027,7 +1056,7 @@ bool probeDoubleClickReset(std::string& detail)
   // Transpose section (signal-flow position: Gate -> Transpose -> Drive).
   // Engine/shift/enable apply live through the stage atomics; GT2 advanced
   // edits apply on the next Start (see the disclosure panels below).
-  _transposeCheck = [NSButton checkboxWithTitle:@"Transpose enable"
+  _transposeCheck = [NSButton checkboxWithTitle:@"Transpose"
                                         target:self
                                         action:@selector(transposeToggled:)];
   _transposeCheck.frame = NSMakeRect(20, y, 180, 22);
@@ -1071,11 +1100,41 @@ bool probeDoubleClickReset(std::string& detail)
   [self buildGt2Panel:kWidth];
   [self buildT3kPanel:kWidth];
   const NSUInteger lowerStart = _docView.subviews.count;
-  y += 10; // breathing room above the Drive section when panels are closed
+  y += 10; // breathing room above the SLAM section when panels are closed
+
+  // SLAM section (DEV audition: Push/Crush/Mass/Impact across three taps).
+  _slamCheck = [NSButton checkboxWithTitle:@"SLAM" target:self action:@selector(slamToggled:)];
+  _slamCheck.frame = NSMakeRect(20, y, 180, 22);
+  _slamCheck.state = NSControlStateValueOff; // dry start; enable to audition
+  [_docView addSubview:_slamCheck];
   y += 30;
+  NSTextField* slamFlavorLabel = [self makeLabel:@"Flavor" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:slamFlavorLabel];
+  _slamSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Push", @"Crush", @"Mass", @"Impact" ]
+                                              trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                    target:self
+                                                    action:@selector(slamFlavorSelected:)];
+  _slamSeg.frame = NSMakeRect(135, y - 2, 320, 26);
+  _slamSeg.selectedSegment = 0;
+  [_docView addSubview:_slamSeg];
+  y += 30;
+  [self addSliderRow:@"Amount"
+                 tag:kTagSlamAmount
+                 min:0
+                 max:100
+                init:100
+               reset:100
+                   y:y
+               width:kWidth];
+  y += 30;
+  _slamTrigLabel = [self makeLabel:@"Impact trigger: ○" frame:NSMakeRect(20, y, kWidth - 40, 22)
+                             small:YES];
+  [_docView addSubview:_slamTrigLabel];
+  y += 26;
+  y += 14; // gap above the Drive section
 
   // Drive section.
-  _driveCheck = [NSButton checkboxWithTitle:@"TightDrive enable" target:self action:@selector(driveToggled:)];
+  _driveCheck = [NSButton checkboxWithTitle:@"TightDrive" target:self action:@selector(driveToggled:)];
   _driveCheck.frame = NSMakeRect(20, y, 180, 22);
   _driveCheck.state = NSControlStateValueOn; // audition default
   [_docView addSubview:_driveCheck];
@@ -1109,7 +1168,7 @@ bool probeDoubleClickReset(std::string& detail)
   y += 40;
 
   // ToneShape section (post-cab; neutral is transparent).
-  _shapeCheck = [NSButton checkboxWithTitle:@"ToneShape enable" target:self action:@selector(shapeToggled:)];
+  _shapeCheck = [NSButton checkboxWithTitle:@"ToneShape" target:self action:@selector(shapeToggled:)];
   _shapeCheck.frame = NSMakeRect(20, y, 180, 22);
   _shapeCheck.state = NSControlStateValueOn; // audition default (neutral)
   [_docView addSubview:_shapeCheck];
@@ -1144,7 +1203,7 @@ bool probeDoubleClickReset(std::string& detail)
 
   // Space section (first stereo stage; both units OFF at audition default
   // so the rhythm tone stays dry until leads/ambience are auditioned).
-  _delayCheck = [NSButton checkboxWithTitle:@"Delay enable" target:self action:@selector(delayToggled:)];
+  _delayCheck = [NSButton checkboxWithTitle:@"Delay" target:self action:@selector(delayToggled:)];
   _delayCheck.frame = NSMakeRect(20, y, 180, 22);
   _delayCheck.state = NSControlStateValueOff; // audition default
   [_docView addSubview:_delayCheck];
@@ -1176,7 +1235,7 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 40;
-  _reverbCheck = [NSButton checkboxWithTitle:@"Reverb enable" target:self action:@selector(reverbToggled:)];
+  _reverbCheck = [NSButton checkboxWithTitle:@"Reverb" target:self action:@selector(reverbToggled:)];
   _reverbCheck.frame = NSMakeRect(20, y, 180, 22);
   _reverbCheck.state = NSControlStateValueOff; // audition default
   [_docView addSubview:_reverbCheck];
@@ -1292,6 +1351,8 @@ bool probeDoubleClickReset(std::string& detail)
   // Transpose value labels show APPLIED (clamped) stage state, like the rig.
   _valueLabels[@(kTagShift)].stringValue = fmtSt(_stage.shiftSt());
   _valueLabels[@(kTagT3kTonality)].stringValue = fmtTonality(_stage.t3kTonalityHz());
+  _valueLabels[@(kTagSlamAmount)].stringValue =
+      [NSString stringWithFormat:@"%.0f%%", _slam.amount01() * 100.0];
 }
 
 // GT2 advanced value labels from stored (pending) config.
@@ -1340,6 +1401,7 @@ bool probeDoubleClickReset(std::string& detail)
   [self refreshValueLabels:p];
   [self refreshTransposeStatus];
   [self refreshTuner];
+  [self refreshSlamTrig];
   if (_engine->isRunning())
   {
     _statusLabel.stringValue =
@@ -1409,6 +1471,9 @@ bool probeDoubleClickReset(std::string& detail)
     break;
   case kTagT3kTonality:
     _stage.setT3kTonalityHz((float)v); // live reference control
+    break;
+  case kTagSlamAmount:
+    _slam.setAmount01((float)(v / 100.0)); // live macro 0..100%
     break;
   default:
     break;
@@ -1569,6 +1634,40 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)tunerToggled:(NSButton*)sender
 {
   _engine->rig().setTunerEnabled(sender.state == NSControlStateValueOn);
+}
+
+// SLAM actions: lock-free atomic stores adopted at the next audio block,
+// exactly like the rig handoff. Flavour/enable changes dip through dry.
+- (void)slamToggled:(NSButton*)sender
+{
+  _slam.setEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)slamFlavorSelected:(NSSegmentedControl*)sender
+{
+  using Flavor = tdm::lab::DevSlam::Flavor;
+  const NSInteger seg = sender.selectedSegment;
+  _slam.setFlavor(seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : seg == 3 ? Flavor::Impact
+                                                                                : Flavor::Push);
+}
+
+- (void)refreshSlamTrig
+{
+  // Lock-free fire counter poll: any advance lights the LED for ~200 ms
+  // (two ticks). Distinguishes "not firing" from "firing but quiet".
+  const int64_t fires = _slam.impactFireCount();
+  if (fires != _slamLastFires)
+  {
+    _slamLastFires = fires;
+    _slamLitTicks = 2;
+  }
+  else if (_slamLitTicks > 0)
+  {
+    --_slamLitTicks;
+  }
+  const BOOL lit = _slamLitTicks > 0;
+  _slamTrigLabel.stringValue = lit ? @"Impact trigger: ●" : @"Impact trigger: ○";
+  _slamTrigLabel.textColor = lit ? [NSColor systemGreenColor] : [NSColor secondaryLabelColor];
 }
 
 - (void)refreshTuner
@@ -1926,6 +2025,150 @@ bool probeDoubleClickReset(std::string& detail)
   return YES;
 }
 
+- (BOOL)runSlamProbe:(std::string*)detail
+{
+  auto fail = [&](const char* msg) {
+    *detail = std::string(" [slam: ") + msg + "]";
+    return NO;
+  };
+  using Flavor = tdm::lab::DevSlam::Flavor;
+  // Defaults: checkbox off, Push, 100%, LED dark, seams installed.
+  if (_slamCheck.state != NSControlStateValueOff)
+    return fail("checkbox not off");
+  if (_slam.isEnabled() || _slam.flavor() != Flavor::Push || _slam.amount01() != 1.0f)
+    return fail("router defaults wrong");
+  if (_slamSeg.selectedSegment != 0)
+    return fail("segment not on Push");
+  if (_engine->rig().slamPreDrive() == nullptr || _engine->rig().slamPostNam() == nullptr
+      || _engine->rig().slamPostIr() == nullptr)
+    return fail("seams not installed");
+  // Drive the Amount slider through the real action.
+  _sliders[@(kTagSlamAmount)].doubleValue = 65.0;
+  [self paramChanged:_sliders[@(kTagSlamAmount)]];
+  if (std::fabs(_slam.amount01() - 0.65f) > 1e-6f)
+    return fail("amount did not reach router");
+  [self refreshValueLabels:_engine->rig().params()];
+  if (![_valueLabels[@(kTagSlamAmount)].stringValue isEqualToString:@"65%"])
+    return fail("amount label wrong");
+  _sliders[@(kTagSlamAmount)].doubleValue = 100.0;
+  [self paramChanged:_sliders[@(kTagSlamAmount)]];
+  // Flavour selector reaches the router for all four flavours.
+  for (NSInteger seg = 0; seg < 4; ++seg)
+  {
+    _slamSeg.selectedSegment = seg;
+    [self slamFlavorSelected:_slamSeg];
+    const Flavor want =
+        seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : seg == 3 ? Flavor::Impact : Flavor::Push;
+    if (_slam.flavor() != want)
+      return fail("flavour did not reach router");
+  }
+  // Transparency: installed-but-off renders bit-identical to no seams.
+  _engine->rig().reset(48000.0, 512);
+  const int n = 512 * 16; // block-aligned: no ragged tail reads
+  std::vector<float> in(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i)
+    in[static_cast<size_t>(i)] = 0.5f * std::sin(2.0 * 3.14159265358979 * 110.0 * i / 48000.0);
+  std::vector<float> off(static_cast<size_t>(n), 0.0f), bare(static_cast<size_t>(n), 0.0f);
+  _slamCheck.state = NSControlStateValueOff;
+  [self slamToggled:_slamCheck];
+  for (int b = 0; b < 16; ++b)
+  {
+    const float* bi[1] = {in.data() + b * 512};
+    float* bo[1] = {off.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().setSlamPreDrive(nullptr);
+  _engine->rig().setSlamPostNam(nullptr);
+  _engine->rig().setSlamPostIr(nullptr);
+  _engine->rig().reset(48000.0, 512);
+  for (int b = 0; b < 16; ++b)
+  {
+    const float* bi[1] = {in.data() + b * 512};
+    float* bo[1] = {bare.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().setSlamPreDrive(&_slam.preDrive());
+  _engine->rig().setSlamPostNam(&_slam.postNam());
+  _engine->rig().setSlamPostIr(&_slam.postIr());
+  if (off != bare)
+    return fail("installed-but-off changed rig output");
+  // Attack signal for the flavour loop + telemetry (two decaying pips).
+  const int na = 512 * 96;
+  std::vector<float> atk(static_cast<size_t>(na), 0.0f);
+  for (int p = 0; p < 2; ++p)
+  {
+    const int at = 24000 + p * 24000;
+    for (int i = 0; i < 4800 && at + i < na; ++i)
+      atk[static_cast<size_t>(at + i)] +=
+          0.8f * std::sin(2.0 * 3.14159265358979 * 100.0 * i / 48000.0) * std::exp(-i / 960.0f);
+  }
+  // Enabled flavours actually render (each tap live) and rig params stay.
+  // Attacks drive every flavour (Impact needs onsets to render at all).
+  const tdm::RigParams before = _engine->rig().params();
+  _engine->rig().reset(48000.0, 512);
+  _slamCheck.state = NSControlStateValueOff;
+  [self slamToggled:_slamCheck];
+  std::vector<float> atkDry(static_cast<size_t>(na), 0.0f);
+  for (int b = 0; b < 96; ++b)
+  {
+    const float* bi[1] = {atk.data() + b * 512};
+    float* bo[1] = {atkDry.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  for (NSInteger seg = 0; seg < 4; ++seg)
+  {
+    _slamSeg.selectedSegment = seg;
+    [self slamFlavorSelected:_slamSeg];
+    _slamCheck.state = NSControlStateValueOn;
+    [self slamToggled:_slamCheck];
+    std::vector<float> wet(static_cast<size_t>(na), 0.0f);
+    for (int b = 0; b < 96; ++b)
+    {
+      const float* bi[1] = {atk.data() + b * 512};
+      float* bo[1] = {wet.data() + b * 512};
+      _engine->rig().processBlock(bi, 1, bo, 1, 512);
+    }
+    if (wet == atkDry)
+      return fail("flavour rendered dry");
+    bool finite = true;
+    for (float v : wet)
+      finite = finite && std::isfinite(v);
+    if (!finite)
+      return fail("flavour non-finite");
+  }
+  const tdm::RigParams after = _engine->rig().params();
+  if (before.gateEnabled != after.gateEnabled || before.tight != after.tight
+      || before.driveEnabled != after.driveEnabled || before.inputTrimDb != after.inputTrimDb)
+    return fail("flavours touched rig params");
+  // Impact telemetry: the attacks fire the detector and light the LED.
+  _slamSeg.selectedSegment = 3;
+  [self slamFlavorSelected:_slamSeg];
+  _slamCheck.state = NSControlStateValueOn;
+  [self slamToggled:_slamCheck];
+  _engine->rig().reset(48000.0, 512);
+  std::vector<float> atkOut(static_cast<size_t>(na), 0.0f);
+  const int64_t firesBefore = _slam.impactFireCount();
+  for (int b = 0; b < 96; ++b)
+  {
+    const float* bi[1] = {atk.data() + b * 512};
+    float* bo[1] = {atkOut.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  if (_slam.impactFireCount() <= firesBefore)
+    return fail("attacks did not fire Impact");
+  [self refreshSlamTrig];
+  if (![_slamTrigLabel.stringValue containsString:@"●"])
+    return fail("LED did not light");
+  // Back to defaults for a clean handoff.
+  _slamCheck.state = NSControlStateValueOff;
+  [self slamToggled:_slamCheck];
+  _slamSeg.selectedSegment = 0;
+  [self slamFlavorSelected:_slamSeg];
+  if (![self checkDocGeometry:detail])
+    return NO;
+  return YES;
+}
+
 - (void)chooseNam:(id)sender
 {
   (void)sender;
@@ -1998,6 +2241,8 @@ bool probeTransposeUiFull(std::string& detail)
     ok = [controller runTransposeProbe:&detail];
     if (ok == YES)
       ok = [controller runTunerProbe:&detail];
+    if (ok == YES)
+      ok = [controller runSlamProbe:&detail];
     delete engine; // stage (controller ivar) still alive: correct order
   }
   return ok == YES;

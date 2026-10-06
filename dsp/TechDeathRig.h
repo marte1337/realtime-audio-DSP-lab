@@ -65,6 +65,7 @@
 #include "dsp/Pitch/GuitarTranspose.h"
 #include "dsp/RigParams.h"
 #include "dsp/Tuner/Tuner.h"
+#include "dsp/SlamInsert.h"
 #include "dsp/TransposeInsert.h"
 #include "dsp/Gate/TechDeathGate.h"
 #include "dsp/TightDrive/TightDrive.h"
@@ -247,6 +248,20 @@ public:
   void setTransposeInsert(TransposeInsert* insert) { transpose_ = insert; }
   TransposeInsert* transposeInsert() const { return transpose_; }
 
+  // DEV SLAM seams (OFF-RT ONLY: call with audio stopped, before start).
+  // Non-owning mono inserts at the three SLAM tap positions: pre-drive
+  // (post-transpose), post-NAM (pre-IR), post-IR (pre-ToneShape). Null
+  // (the default) leaves the production chain bit-identical. The
+  // pointed-to inserts must outlive the rig's use of them; reset()
+  // forwards to each installed insert. Production hosts never call
+  // these; only DEV binaries do (see dsp/lab/Slam/DevSlam.h).
+  void setSlamPreDrive(SlamInsert* insert) { slamPre_ = insert; }
+  void setSlamPostNam(SlamInsert* insert) { slamPostNam_ = insert; }
+  void setSlamPostIr(SlamInsert* insert) { slamPostIr_ = insert; }
+  SlamInsert* slamPreDrive() const { return slamPre_; }
+  SlamInsert* slamPostNam() const { return slamPostNam_; }
+  SlamInsert* slamPostIr() const { return slamPostIr_; }
+
   // RT-safe after reset(). inputs[nIn][nFrames] -> outputs[nOut][nOut].
   // Changed parameters are applied once here, at the block boundary.
   void processBlock(const float* const* inputs, int numInputChannels, float* const* outputs,
@@ -281,6 +296,9 @@ private:
   float transposeEngage_ = 0.0f; // 0 = exact wire, 1 = transpose path
   int transposeLatency_ = 0; // nominal engine latency post-reset (768 @ 48 kHz)
   TransposeInsert* transpose_ = nullptr; // DEV-only substitute, null in production
+  SlamInsert* slamPre_ = nullptr; // DEV-only SLAM taps, null in production
+  SlamInsert* slamPostNam_ = nullptr;
+  SlamInsert* slamPostIr_ = nullptr;
   TightDrive drive_;
   NamStage nam_;
   CabIrStage ir_;

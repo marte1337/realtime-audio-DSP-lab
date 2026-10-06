@@ -44,6 +44,12 @@ void TechDeathRig::reset(double sampleRate, int maxBlockSize)
   }
   if (transpose_ != nullptr)
     transpose_->reset(sampleRate, maxBlockSize);
+  if (slamPre_ != nullptr)
+    slamPre_->reset(sampleRate, maxBlockSize);
+  if (slamPostNam_ != nullptr)
+    slamPostNam_->reset(sampleRate, maxBlockSize);
+  if (slamPostIr_ != nullptr)
+    slamPostIr_->reset(sampleRate, maxBlockSize);
   drive_.reset(sampleRate);
   shape_.reset(sampleRate);
   space_.reset(sampleRate);
@@ -415,9 +421,15 @@ void TechDeathRig::processBlock(const float* const* inputs, int numInputChannels
       transpose_->process(mono_.data(), mono_.data(), m); // DEV A/B substitute wins
     else
       runTranspose(mono_.data(), m); // production transpose (exact wire when off)
+    if (slamPre_ != nullptr)
+      slamPre_->process(mono_.data(), mono_.data(), m); // DEV SLAM pre-drive tap
     drive_.processBlock(mono_.data(), mono_.data(), m);
     nam_.processBlock(mono_.data(), mono_.data(), m);
+    if (slamPostNam_ != nullptr)
+      slamPostNam_->process(mono_.data(), mono_.data(), m); // DEV SLAM post-NAM tap
     ir_.processBlock(mono_.data(), mono_.data(), m);
+    if (slamPostIr_ != nullptr)
+      slamPostIr_->process(mono_.data(), mono_.data(), m); // DEV SLAM post-IR tap
     shape_.processBlock(mono_.data(), mono_.data(), m);
     // Space is the first stereo stage: mono in, L/R out. Both trim
     // instances see identical target histories, so their gains agree
