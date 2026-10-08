@@ -319,6 +319,10 @@ public:
     return 0.0f;
   }
   float fastValue() const { return fast_.value(); }
+  // Threshold-only update: preserves floor/fast/refractory state (for live
+  // DEV sensitivity control; identical decisions to a reset at the same
+  // overDb once the floor re-settles).
+  void setOverDb(float overDb) { ratio_ = slamDbToLin(overDb); }
   // Re-arm after a confirmed fire (one attack = one trigger).
   void snapFloor(float v) { floor_.snap(v); }
 
@@ -366,6 +370,13 @@ public:
     scheduled_ = false;
     schedCount_ = 0;
     schedNext_ = 0;
+  }
+  // Live sensitivity update (same 18->6 dB mapping as reset): no state
+  // cleared, so in-flight confirms and floor adaptation survive.
+  void setSensitivity(float sens01)
+  {
+    const float overDb = 18.0f - 12.0f * sens01;
+    onset_.setOverDb(overDb);
   }
   void setScheduled(bool scheduled)
   {

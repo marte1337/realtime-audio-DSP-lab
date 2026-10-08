@@ -237,6 +237,8 @@ void runDevSlamTests()
       DevSlam d;
       d.setEnabled(true);
       d.setFlavor(Flavor::Impact);
+      d.setImpactVoice(DevSlam::ImpactVoice::Legacy); // v1 pin (FROZEN)
+      d.setImpactSensitivity(0.5f); // v1 definition (default is now 0.6)
       d.setAmount01(1.0f);
       d.preDrive().reset(kSr, kBlock);
       std::vector<float> got = atk;

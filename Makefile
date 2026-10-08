@@ -47,7 +47,7 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(BUILD)/transpose-dev/host/dev/TdmDevApp.o
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTuner.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp tests/TestSlam.cpp tests/TestDevSlam.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTuner.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp tests/TestSlam.cpp tests/TestDevSlam.cpp tests/TestSlamImpactV2.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 # Lab pitch prototype: standalone offline tool, deliberately NOT linked into

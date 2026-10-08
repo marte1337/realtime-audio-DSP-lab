@@ -30,6 +30,7 @@ void runLabWsolaLiveTests();
 void runHostBufferTests();
 void runSlamTests();
 void runDevSlamTests();
+void runSlamImpactV2Tests();
 
 namespace
 {
@@ -80,6 +81,7 @@ int main()
   runSuite("hostbuffer", runHostBufferTests);
   runSuite("slam", runSlamTests);
   runSuite("devslam", runDevSlamTests);
+  runSuite("slamimpactv2", runSlamImpactV2Tests);
   std::printf("checks=%d failures=%zu\n", tdm_test::checkCount(), tdm_test::failures().size());
   for (const auto& f : tdm_test::failures())
     std::printf("  FAIL %s\n", f.c_str());

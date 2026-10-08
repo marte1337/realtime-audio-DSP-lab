@@ -129,7 +129,8 @@ enum SliderTag
   kTagOutTrim,
   kTagShift, // transpose section: shared shift + T3K tonality (live)
   kTagT3kTonality,
-  kTagSlamAmount // SLAM section: shared 0..100% macro (live)
+  kTagSlamAmount, // SLAM section: shared 0..100% macro (live)
+  kTagSlamSens // SLAM section: Impact sensitivity 0..100% -> sens 0.3..0.7
 };
 
 // GT2 advanced rows use their own tag band (field index + base) with a
@@ -180,6 +181,8 @@ double resetValueForTag(SliderTag tag)
     return 0.0; // tonality off
   case kTagSlamAmount:
     return 100.0; // SLAM macro default: study reference per flavour
+  case kTagSlamSens:
+    return 75.0; // Impact sensitivity default: sens 0.6 (v2 study)
   }
   return 0.0;
 }
@@ -222,6 +225,7 @@ int smokeTest()
     check((float)resetValueForTag(kTagShift) == 0.0f, "reset: shift -> 0 st");
     check((float)resetValueForTag(kTagT3kTonality) == 0.0f, "reset: tonality -> Off");
     check((float)resetValueForTag(kTagSlamAmount) == 100.0f, "reset: slam amount -> 100%");
+    check((float)resetValueForTag(kTagSlamSens) == 75.0f, "reset: slam sens -> 75 (0.6)");
     // Double-click behavior on the real control (defined after the control
     // classes below): a synthesized double-click parks the reset value and
     // fires the normal action exactly once.
@@ -540,7 +544,14 @@ bool probeDoubleClickReset(std::string& detail)
   tdm::lab::DevSlam _slam;
   NSButton* _slamCheck;
   NSSegmentedControl* _slamSeg;
+  NSSegmentedControl* _slamVoiceSeg; // Impact v2 voice (greyed unless Impact)
+  NSSegmentedControl* _slamLawSeg; // Impact gain law: Adaptive | Target
+  NSSegmentedControl* _slamTargetSeg; // Target step: Low | Med | High (-12/-6/-2 dB)
+  NSSegmentedControl* _slamDbgSeg; // Impact debug: Normal | Branch Solo
+  NSSegmentedControl* _slamDbgGainSeg; // Impact debug gain: 1x | 4x | 8x
+  NSButton* _slamRefCheck; // Impact 180 Hz routing proof (tiny DEV checkbox)
   NSTextField* _slamTrigLabel;
+  NSTextField* _slamTeleLabel; // branch peak | adaptive gain | limiter GR
   int64_t _slamLastFires;
   int _slamLitTicks;
   NSWindow* _window;
@@ -617,11 +628,19 @@ bool probeDoubleClickReset(std::string& detail)
     _stage.setT3kTonalityHz(tdm::lab::DevTranspose::kDefaultT3kTonalityHz);
     _stage.resetGt2ToBaseline();
     _gt2Applied = _stage.gt2Config();
-    // SLAM audition state: off (dry start), Push, 100%. Installed into
-    // all three rig seams pre-start (off-RT); Start/Stop never touches it.
+    // SLAM audition state: off (dry start), Push, 100%, Impact/Thump
+    // staged with v2-study sensitivity 0.6. Installed into all three rig
+    // seams pre-start (off-RT); Start/Stop never touches it.
     _slam.setEnabled(false);
     _slam.setFlavor(tdm::lab::DevSlam::Flavor::Push);
     _slam.setAmount01(1.0f);
+    _slam.setImpactVoice(tdm::lab::DevSlam::ImpactVoice::Thump);
+    _slam.setImpactSensitivity(tdm::lab::DevSlam::kDefaultImpactSens);
+    _slam.setImpactGainLaw(tdm::lab::DevSlam::ImpactGainLaw::LegacyAdaptive);
+    _slam.setImpactTargetDb(tdm::lab::DevSlam::kDefaultTargetDb);
+    _slam.setImpactDebugSolo(false);
+    _slam.setImpactDebugGain(1.0f);
+    _slam.setImpactTestRef(false);
     _slamLastFires = 0;
     _slamLitTicks = 0;
     _lastStepper = 0.0;
@@ -1056,7 +1075,7 @@ bool probeDoubleClickReset(std::string& detail)
   // Transpose section (signal-flow position: Gate -> Transpose -> Drive).
   // Engine/shift/enable apply live through the stage atomics; GT2 advanced
   // edits apply on the next Start (see the disclosure panels below).
-  _transposeCheck = [NSButton checkboxWithTitle:@"Transpose"
+  _transposeCheck = [NSButton checkboxWithTitle:@"Pitch"
                                         target:self
                                         action:@selector(transposeToggled:)];
   _transposeCheck.frame = NSMakeRect(20, y, 180, 22);
@@ -1127,9 +1146,97 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 30;
+  // Impact v2 audition rows (DEV-only sub-selector + narrow sensitivity;
+  // greyed unless Flavor == Impact, see slamFlavorSelected:).
+  NSTextField* slamVoiceLabel =
+      [self makeLabel:@"Impact Voice" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:slamVoiceLabel];
+  _slamVoiceSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Sub", @"Thump", @"Punch" ]
+                                             trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                       target:self
+                                                       action:@selector(slamVoiceSelected:)];
+  _slamVoiceSeg.frame = NSMakeRect(135, y - 2, 320, 26);
+  _slamVoiceSeg.selectedSegment = 1; // Thump audition default
+  [_docView addSubview:_slamVoiceSeg];
+  y += 30;
+  [self addSliderRow:@"Sensitivity"
+                 tag:kTagSlamSens
+                 min:0
+                 max:100
+                init:75
+               reset:75
+                   y:y
+               width:kWidth];
+  y += 30;
+  // Impact gain law (DEV-only research comparison: legacy adaptive burst
+  // gain vs target-ratio; target step live only in Target mode).
+  NSTextField* slamLawLabel =
+      [self makeLabel:@"Impact Law" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:slamLawLabel];
+  _slamLawSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Adaptive", @"Target" ]
+                                           trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                     target:self
+                                                     action:@selector(slamLawSelected:)];
+  _slamLawSeg.frame = NSMakeRect(135, y - 2, 320, 26);
+  _slamLawSeg.selectedSegment = 0; // Adaptive: current behavior unchanged
+  [_docView addSubview:_slamLawSeg];
+  y += 30;
+  NSTextField* slamTargetLabel =
+      [self makeLabel:@"Impact Target" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:slamTargetLabel];
+  _slamTargetSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Low", @"Med", @"High" ]
+                                              trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                        target:self
+                                                        action:@selector(slamTargetSelected:)];
+  _slamTargetSeg.frame = NSMakeRect(135, y - 2, 320, 26);
+  _slamTargetSeg.selectedSegment = 2; // High (-2 dB): deliberately obvious
+  [_docView addSubview:_slamTargetSeg];
+  y += 30;
+  // Impact diagnostics (DEV-only branch solo / debug gain / ref burst).
+  NSTextField* slamDbgLabel =
+      [self makeLabel:@"Impact Debug" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:slamDbgLabel];
+  _slamDbgSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Normal", @"Branch Solo" ]
+                                           trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                     target:self
+                                                     action:@selector(slamDebugSelected:)];
+  _slamDbgSeg.frame = NSMakeRect(135, y - 2, 320, 26);
+  _slamDbgSeg.selectedSegment = 0;
+  [_docView addSubview:_slamDbgSeg];
+  y += 30;
+  NSTextField* slamDbgGainLabel =
+      [self makeLabel:@"Debug Gain" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:slamDbgGainLabel];
+  _slamDbgGainSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"1x", @"4x", @"8x" ]
+                                               trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                         target:self
+                                                         action:@selector(slamDebugGainSelected:)];
+  _slamDbgGainSeg.frame = NSMakeRect(135, y - 2, 320, 26);
+  _slamDbgGainSeg.selectedSegment = 0;
+  [_docView addSubview:_slamDbgGainSeg];
+  _slamRefCheck = [NSButton checkboxWithTitle:@"Ref 180Hz"
+                                       target:self
+                                       action:@selector(slamRefToggled:)];
+  _slamRefCheck.frame = NSMakeRect(465, y, 130, 22);
+  _slamRefCheck.state = NSControlStateValueOff;
+  [_docView addSubview:_slamRefCheck];
+  y += 30;
+  // Flavor starts on Push: Impact rows grey until Impact is selected.
+  _slamVoiceSeg.enabled = NO;
+  _sliders[@(kTagSlamSens)].enabled = NO;
+  _slamLawSeg.enabled = NO;
+  _slamTargetSeg.enabled = NO;
+  _slamDbgSeg.enabled = NO;
+  _slamDbgGainSeg.enabled = NO;
+  _slamRefCheck.enabled = NO;
   _slamTrigLabel = [self makeLabel:@"Impact trigger: ○" frame:NSMakeRect(20, y, kWidth - 40, 22)
                              small:YES];
   [_docView addSubview:_slamTrigLabel];
+  y += 26;
+  _slamTeleLabel = [self makeLabel:@"Impact branch: -- | gain -- | lim --"
+                              frame:NSMakeRect(20, y, kWidth - 40, 22)
+                              small:YES];
+  [_docView addSubview:_slamTeleLabel];
   y += 26;
   y += 14; // gap above the Drive section
 
@@ -1353,6 +1460,8 @@ bool probeDoubleClickReset(std::string& detail)
   _valueLabels[@(kTagT3kTonality)].stringValue = fmtTonality(_stage.t3kTonalityHz());
   _valueLabels[@(kTagSlamAmount)].stringValue =
       [NSString stringWithFormat:@"%.0f%%", _slam.amount01() * 100.0];
+  _valueLabels[@(kTagSlamSens)].stringValue =
+      [NSString stringWithFormat:@"%.2f", _slam.impactSensitivity()];
 }
 
 // GT2 advanced value labels from stored (pending) config.
@@ -1474,6 +1583,9 @@ bool probeDoubleClickReset(std::string& detail)
     break;
   case kTagSlamAmount:
     _slam.setAmount01((float)(v / 100.0)); // live macro 0..100%
+    break;
+  case kTagSlamSens:
+    _slam.setImpactSensitivity((float)(0.3 + (v / 100.0) * 0.4)); // narrow 0.3..0.7
     break;
   default:
     break;
@@ -1649,6 +1761,58 @@ bool probeDoubleClickReset(std::string& detail)
   const NSInteger seg = sender.selectedSegment;
   _slam.setFlavor(seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : seg == 3 ? Flavor::Impact
                                                                                 : Flavor::Push);
+  // Impact v2 rows live only when Flavor == Impact (staged values persist).
+  const BOOL impact = (seg == 3);
+  _slamVoiceSeg.enabled = impact;
+  _sliders[@(kTagSlamSens)].enabled = impact;
+  _slamLawSeg.enabled = impact;
+  _slamTargetSeg.enabled = impact && _slamLawSeg.selectedSegment == 1;
+  _slamDbgSeg.enabled = impact;
+  _slamDbgGainSeg.enabled = impact;
+  _slamRefCheck.enabled = impact;
+}
+
+- (void)slamVoiceSelected:(NSSegmentedControl*)sender
+{
+  using ImpactVoice = tdm::lab::DevSlam::ImpactVoice;
+  const NSInteger seg = sender.selectedSegment;
+  _slam.setImpactVoice(seg == 0 ? ImpactVoice::Sub : seg == 2 ? ImpactVoice::Punch
+                                                               : ImpactVoice::Thump);
+}
+
+// DEV-only Impact gain law: legacy adaptive burst gain vs target-ratio
+// (Low -12 / Med -6 / High -2 dB below recent main level). Target step live
+// only in Target mode.
+- (void)slamLawSelected:(NSSegmentedControl*)sender
+{
+  using ImpactGainLaw = tdm::lab::DevSlam::ImpactGainLaw;
+  const BOOL target = (sender.selectedSegment == 1);
+  _slam.setImpactGainLaw(target ? ImpactGainLaw::TargetRatio : ImpactGainLaw::LegacyAdaptive);
+  _slamTargetSeg.enabled = (_slamSeg.selectedSegment == 3) && target;
+}
+
+- (void)slamTargetSelected:(NSSegmentedControl*)sender
+{
+  const NSInteger seg = sender.selectedSegment;
+  _slam.setImpactTargetDb(seg == 0 ? -12.0f : seg == 1 ? -6.0f : -2.0f);
+}
+
+// DEV-only Impact diagnostics: branch solo (dry muted at the post-IR tap),
+// post-voice debug multiplier, and the fixed 180 Hz routing-proof burst.
+- (void)slamDebugSelected:(NSSegmentedControl*)sender
+{
+  _slam.setImpactDebugSolo(sender.selectedSegment == 1);
+}
+
+- (void)slamDebugGainSelected:(NSSegmentedControl*)sender
+{
+  const NSInteger seg = sender.selectedSegment;
+  _slam.setImpactDebugGain(seg == 1 ? 4.0f : seg == 2 ? 8.0f : 1.0f);
+}
+
+- (void)slamRefToggled:(NSButton*)sender
+{
+  _slam.setImpactTestRef(sender.state == NSControlStateValueOn);
 }
 
 - (void)refreshSlamTrig
@@ -1668,6 +1832,18 @@ bool probeDoubleClickReset(std::string& detail)
   const BOOL lit = _slamLitTicks > 0;
   _slamTrigLabel.stringValue = lit ? @"Impact trigger: ●" : @"Impact trigger: ○";
   _slamTrigLabel.textColor = lit ? [NSColor systemGreenColor] : [NSColor secondaryLabelColor];
+  // Live branch/gain/limiter telemetry (lock-free atomics published on the
+  // audio thread; this 10 Hz tick only formats). Branch is pre-solo and
+  // pre-debug-gain: the true musical contribution.
+  const float br = _slam.impactTeleBranch();
+  const float gn = _slam.impactTeleGain();
+  const float lm = _slam.impactTeleLim();
+  const tdm::lab::SlamTeleText tt = tdm::lab::slamTeleText(br, gn, lm);
+  NSString* brS = [NSString stringWithUTF8String:tt.branch.c_str()];
+  NSString* gnS = [NSString stringWithUTF8String:tt.gain.c_str()];
+  NSString* lmS = [NSString stringWithUTF8String:tt.lim.c_str()];
+  _slamTeleLabel.stringValue =
+      [NSString stringWithFormat:@"Impact branch: %@ | gain %@ | lim %@ dB", brS, gnS, lmS];
 }
 
 - (void)refreshTuner
@@ -2032,13 +2208,31 @@ bool probeDoubleClickReset(std::string& detail)
     return NO;
   };
   using Flavor = tdm::lab::DevSlam::Flavor;
-  // Defaults: checkbox off, Push, 100%, LED dark, seams installed.
+  using ImpactVoice = tdm::lab::DevSlam::ImpactVoice;
+  // Defaults: checkbox off, Push, 100%, Impact/Thump staged at sens 0.6
+  // (greyed), LED dark, seams installed.
   if (_slamCheck.state != NSControlStateValueOff)
     return fail("checkbox not off");
   if (_slam.isEnabled() || _slam.flavor() != Flavor::Push || _slam.amount01() != 1.0f)
     return fail("router defaults wrong");
   if (_slamSeg.selectedSegment != 0)
     return fail("segment not on Push");
+  if (_slam.impactVoice() != ImpactVoice::Thump
+      || std::fabs(_slam.impactSensitivity() - 0.6f) > 1e-6f)
+    return fail("impact v2 defaults wrong");
+  if (_slamVoiceSeg.selectedSegment != 1)
+    return fail("voice segment not on Thump");
+  if (_slamVoiceSeg.enabled || _sliders[@(kTagSlamSens)].enabled || _slamLawSeg.enabled
+      || _slamTargetSeg.enabled)
+    return fail("impact rows live on Push");
+  // Debug defaults: Normal, 1x, ref off (greyed on Push).
+  if (_slam.isImpactDebugSolo() || _slam.impactDebugGain() != 1.0f || _slam.isImpactTestRef())
+    return fail("debug defaults wrong");
+  if (_slamDbgSeg.selectedSegment != 0 || _slamDbgGainSeg.selectedSegment != 0
+      || _slamRefCheck.state != NSControlStateValueOff)
+    return fail("debug controls not default");
+  if (_slamDbgSeg.enabled || _slamDbgGainSeg.enabled || _slamRefCheck.enabled)
+    return fail("debug rows live on Push");
   if (_engine->rig().slamPreDrive() == nullptr || _engine->rig().slamPostNam() == nullptr
       || _engine->rig().slamPostIr() == nullptr)
     return fail("seams not installed");
@@ -2052,7 +2246,8 @@ bool probeDoubleClickReset(std::string& detail)
     return fail("amount label wrong");
   _sliders[@(kTagSlamAmount)].doubleValue = 100.0;
   [self paramChanged:_sliders[@(kTagSlamAmount)]];
-  // Flavour selector reaches the router for all four flavours.
+  // Flavour selector reaches the router for all four flavours; Impact rows
+  // grey unless Impact is selected.
   for (NSInteger seg = 0; seg < 4; ++seg)
   {
     _slamSeg.selectedSegment = seg;
@@ -2061,7 +2256,89 @@ bool probeDoubleClickReset(std::string& detail)
         seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : seg == 3 ? Flavor::Impact : Flavor::Push;
     if (_slam.flavor() != want)
       return fail("flavour did not reach router");
+    const BOOL live = (seg == 3);
+    // Law row follows Impact; target row stays grey (law is Adaptive here).
+    if (_slamVoiceSeg.enabled != live || _sliders[@(kTagSlamSens)].enabled != live
+        || _slamLawSeg.enabled != live || _slamTargetSeg.enabled
+        || _slamDbgSeg.enabled != live || _slamDbgGainSeg.enabled != live
+        || _slamRefCheck.enabled != live)
+      return fail("impact row grey state wrong");
   }
+  // Voice sub-selector reaches the router for all three v2 voices.
+  _slamSeg.selectedSegment = 3;
+  [self slamFlavorSelected:_slamSeg];
+  for (NSInteger seg = 0; seg < 3; ++seg)
+  {
+    _slamVoiceSeg.selectedSegment = seg;
+    [self slamVoiceSelected:_slamVoiceSeg];
+    const ImpactVoice want =
+        seg == 0 ? ImpactVoice::Sub : seg == 2 ? ImpactVoice::Punch : ImpactVoice::Thump;
+    if (_slam.impactVoice() != want)
+      return fail("voice did not reach router");
+  }
+  // Sensitivity slider maps 0..100% onto the narrow 0.3..0.7 range.
+  _sliders[@(kTagSlamSens)].doubleValue = 0.0;
+  [self paramChanged:_sliders[@(kTagSlamSens)]];
+  if (std::fabs(_slam.impactSensitivity() - 0.3f) > 1e-6f)
+    return fail("sens floor wrong");
+  _sliders[@(kTagSlamSens)].doubleValue = 100.0;
+  [self paramChanged:_sliders[@(kTagSlamSens)]];
+  if (std::fabs(_slam.impactSensitivity() - 0.7f) > 1e-6f)
+    return fail("sens ceiling wrong");
+  _sliders[@(kTagSlamSens)].doubleValue = 75.0;
+  [self paramChanged:_sliders[@(kTagSlamSens)]];
+  [self refreshValueLabels:_engine->rig().params()];
+  if (![_valueLabels[@(kTagSlamSens)].stringValue isEqualToString:@"0.60"])
+    return fail("sens label wrong");
+  // Gain law + target steps reach the router; target row lives only in
+  // Target mode (law row lives whenever Impact is selected).
+  using ImpactGainLaw = tdm::lab::DevSlam::ImpactGainLaw;
+  if (_slamLawSeg.selectedSegment != 0 || _slamTargetSeg.selectedSegment != 2)
+    return fail("law/target segments not default");
+  if (_slam.impactGainLaw() != ImpactGainLaw::LegacyAdaptive
+      || _slam.impactTargetDb() != tdm::lab::DevSlam::kDefaultTargetDb)
+    return fail("law/target router defaults wrong");
+  _slamLawSeg.selectedSegment = 1;
+  [self slamLawSelected:_slamLawSeg];
+  if (_slam.impactGainLaw() != ImpactGainLaw::TargetRatio)
+    return fail("law did not reach router");
+  if (!_slamTargetSeg.enabled)
+    return fail("target row grey in Target mode");
+  for (NSInteger ts = 0; ts < 3; ++ts)
+  {
+    _slamTargetSeg.selectedSegment = ts;
+    [self slamTargetSelected:_slamTargetSeg];
+    const float want = ts == 0 ? -12.0f : ts == 1 ? -6.0f : -2.0f;
+    if (_slam.impactTargetDb() != want)
+      return fail("target step did not reach router");
+  }
+  _slamTargetSeg.selectedSegment = 2;
+  [self slamTargetSelected:_slamTargetSeg];
+  _slamLawSeg.selectedSegment = 0;
+  [self slamLawSelected:_slamLawSeg];
+  if (_slamTargetSeg.enabled)
+    return fail("target row live in Adaptive mode");
+  // Debug controls reach the router.
+  _slamDbgSeg.selectedSegment = 1;
+  [self slamDebugSelected:_slamDbgSeg];
+  if (!_slam.isImpactDebugSolo())
+    return fail("solo did not reach router");
+  _slamDbgSeg.selectedSegment = 0;
+  [self slamDebugSelected:_slamDbgSeg];
+  for (NSInteger gs = 0; gs < 3; ++gs)
+  {
+    _slamDbgGainSeg.selectedSegment = gs;
+    [self slamDebugGainSelected:_slamDbgGainSeg];
+    const float want = gs == 1 ? 4.0f : gs == 2 ? 8.0f : 1.0f;
+    if (_slam.impactDebugGain() != want)
+      return fail("debug gain did not reach router");
+  }
+  _slamRefCheck.state = NSControlStateValueOn;
+  [self slamRefToggled:_slamRefCheck];
+  if (!_slam.isImpactTestRef())
+    return fail("ref did not reach router");
+  _slamRefCheck.state = NSControlStateValueOff;
+  [self slamRefToggled:_slamRefCheck];
   // Transparency: installed-but-off renders bit-identical to no seams.
   _engine->rig().reset(48000.0, 512);
   const int n = 512 * 16; // block-aligned: no ragged tail reads
@@ -2121,20 +2398,30 @@ bool probeDoubleClickReset(std::string& detail)
     [self slamFlavorSelected:_slamSeg];
     _slamCheck.state = NSControlStateValueOn;
     [self slamToggled:_slamCheck];
-    std::vector<float> wet(static_cast<size_t>(na), 0.0f);
-    for (int b = 0; b < 96; ++b)
+    // Impact renders once per v2 voice (live sub-switching, no reset).
+    const int voices = (seg == 3) ? 3 : 1;
+    for (int vv = 0; vv < voices; ++vv)
     {
-      const float* bi[1] = {atk.data() + b * 512};
-      float* bo[1] = {wet.data() + b * 512};
-      _engine->rig().processBlock(bi, 1, bo, 1, 512);
+      if (seg == 3)
+      {
+        _slamVoiceSeg.selectedSegment = vv;
+        [self slamVoiceSelected:_slamVoiceSeg];
+      }
+      std::vector<float> wet(static_cast<size_t>(na), 0.0f);
+      for (int b = 0; b < 96; ++b)
+      {
+        const float* bi[1] = {atk.data() + b * 512};
+        float* bo[1] = {wet.data() + b * 512};
+        _engine->rig().processBlock(bi, 1, bo, 1, 512);
+      }
+      if (wet == atkDry)
+        return fail("flavour rendered dry");
+      bool finite = true;
+      for (float v : wet)
+        finite = finite && std::isfinite(v);
+      if (!finite)
+        return fail("flavour non-finite");
     }
-    if (wet == atkDry)
-      return fail("flavour rendered dry");
-    bool finite = true;
-    for (float v : wet)
-      finite = finite && std::isfinite(v);
-    if (!finite)
-      return fail("flavour non-finite");
   }
   const tdm::RigParams after = _engine->rig().params();
   if (before.gateEnabled != after.gateEnabled || before.tight != after.tight
@@ -2159,9 +2446,109 @@ bool probeDoubleClickReset(std::string& detail)
   [self refreshSlamTrig];
   if (![_slamTrigLabel.stringValue containsString:@"●"])
     return fail("LED did not light");
+  if (_slam.impactTeleBranch() <= 0.0f || _slam.impactTeleGain() <= 0.0f)
+    return fail("branch/gain telemetry dead");
+  if (![_slamTeleLabel.stringValue containsString:@"Impact branch: "])
+    return fail("telemetry label not refreshed");
+  // Branch solo renders the contribution alone (dry muted, still finite).
+  _slamDbgSeg.selectedSegment = 1;
+  [self slamDebugSelected:_slamDbgSeg];
+  std::vector<float> solo(static_cast<size_t>(na), 0.0f);
+  for (int b = 0; b < 96; ++b)
+  {
+    const float* bi[1] = {atk.data() + b * 512};
+    float* bo[1] = {solo.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  float soloPeak = 0.0f;
+  bool soloFinite = true;
+  for (float v : solo)
+  {
+    soloPeak = std::max(soloPeak, std::fabs(v));
+    soloFinite = soloFinite && std::isfinite(v);
+  }
+  if (!soloFinite || soloPeak <= 1e-4f)
+    return fail("branch solo silent/non-finite");
+  _slamDbgSeg.selectedSegment = 0;
+  [self slamDebugSelected:_slamDbgSeg];
+  // 180 Hz ref burst renders (routing proof path): fresh reset, same
+  // input as the voice run above, so any difference is the substitution.
+  _slamRefCheck.state = NSControlStateValueOn;
+  [self slamRefToggled:_slamRefCheck];
+  _engine->rig().reset(48000.0, 512);
+  std::vector<float> ref(static_cast<size_t>(na), 0.0f);
+  for (int b = 0; b < 96; ++b)
+  {
+    const float* bi[1] = {atk.data() + b * 512};
+    float* bo[1] = {ref.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  if (ref == atkOut)
+    return fail("ref rendered identical (not substituted)");
+  bool refFinite = true;
+  float refPeak = 0.0f;
+  for (float v : ref)
+  {
+    refFinite = refFinite && std::isfinite(v);
+    refPeak = std::max(refPeak, std::fabs(v));
+  }
+  if (!refFinite || refPeak <= 1e-4f)
+    return fail("ref silent/non-finite");
+  _slamRefCheck.state = NSControlStateValueOff;
+  [self slamRefToggled:_slamRefCheck];
+  // Target-ratio law renders differently from Adaptive; the three steps
+  // order strictly (Low < Med < High branch peaks on identical input).
+  _slamLawSeg.selectedSegment = 1;
+  [self slamLawSelected:_slamLawSeg];
+  _engine->rig().reset(48000.0, 512);
+  std::vector<float> tgt(static_cast<size_t>(na), 0.0f);
+  for (int b = 0; b < 96; ++b)
+  {
+    const float* bi[1] = {atk.data() + b * 512};
+    float* bo[1] = {tgt.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  if (tgt == atkOut)
+    return fail("target law rendered identical to adaptive");
+  _slamDbgSeg.selectedSegment = 1;
+  [self slamDebugSelected:_slamDbgSeg];
+  float stepPeak[3] = {0.0f, 0.0f, 0.0f};
+  for (NSInteger ts = 0; ts < 3; ++ts)
+  {
+    _slamTargetSeg.selectedSegment = ts;
+    [self slamTargetSelected:_slamTargetSeg];
+    _engine->rig().reset(48000.0, 512);
+    std::vector<float> step(static_cast<size_t>(na), 0.0f);
+    for (int b = 0; b < 96; ++b)
+    {
+      const float* bi[1] = {atk.data() + b * 512};
+      float* bo[1] = {step.data() + b * 512};
+      _engine->rig().processBlock(bi, 1, bo, 1, 512);
+    }
+    for (float v : step)
+    {
+      if (!std::isfinite(v))
+        return fail("target step non-finite");
+      stepPeak[ts] = std::max(stepPeak[ts], std::fabs(v));
+    }
+  }
+  _slamDbgSeg.selectedSegment = 0;
+  [self slamDebugSelected:_slamDbgSeg];
+  if (!(stepPeak[0] < stepPeak[1] && stepPeak[1] < stepPeak[2]))
+    return fail("target steps not ordered");
+  _slamLawSeg.selectedSegment = 0;
+  [self slamLawSelected:_slamLawSeg];
   // Back to defaults for a clean handoff.
   _slamCheck.state = NSControlStateValueOff;
   [self slamToggled:_slamCheck];
+  _slamVoiceSeg.selectedSegment = 1;
+  [self slamVoiceSelected:_slamVoiceSeg];
+  _sliders[@(kTagSlamSens)].doubleValue = 75.0;
+  [self paramChanged:_sliders[@(kTagSlamSens)]];
+  _slamDbgGainSeg.selectedSegment = 0;
+  [self slamDebugGainSelected:_slamDbgGainSeg];
+  _slamTargetSeg.selectedSegment = 2;
+  [self slamTargetSelected:_slamTargetSeg];
   _slamSeg.selectedSegment = 0;
   [self slamFlavorSelected:_slamSeg];
   if (![self checkDocGeometry:detail])
