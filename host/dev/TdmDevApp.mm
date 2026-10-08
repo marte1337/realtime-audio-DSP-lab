@@ -509,7 +509,6 @@ bool probeDoubleClickReset(std::string& detail)
 - (void)buildUI;
 - (void)autoQuitAfter:(NSTimeInterval)seconds;
 - (void)refreshTuner; // 10 Hz readout snapshot (tick only)
-- (void)refreshSlamTrig; // 10 Hz Impact trigger LED (tick only)
 // Headless UI-wiring probe (smoke-test only): drives the real transpose
 // controls programmatically and verifies stage state. Needs no audio.
 - (BOOL)runTransposeProbe:(std::string*)detail;
@@ -521,7 +520,7 @@ bool probeDoubleClickReset(std::string& detail)
 - (BOOL)runTunerProbe:(std::string*)detail;
 // SLAM wiring probe (smoke-test only): drives the SLAM checkbox, flavour
 // selector, and Amount slider programmatically and verifies router state,
-// Impact telemetry, transparency, and rig-param isolation. Needs no audio.
+// transparency, and rig-param isolation. Needs no audio.
 - (BOOL)runSlamProbe:(std::string*)detail;
 @end
 
@@ -540,9 +539,6 @@ bool probeDoubleClickReset(std::string& detail)
   tdm::lab::DevSlam _slam;
   NSButton* _slamCheck;
   NSSegmentedControl* _slamSeg;
-  NSTextField* _slamTrigLabel;
-  int64_t _slamLastFires;
-  int _slamLitTicks;
   NSWindow* _window;
   NSTextField* _statusLabel;
   NSTextField* _transposeStatus;
@@ -622,8 +618,6 @@ bool probeDoubleClickReset(std::string& detail)
     _slam.setEnabled(false);
     _slam.setFlavor(tdm::lab::DevSlam::Flavor::Push);
     _slam.setAmount01(1.0f);
-    _slamLastFires = 0;
-    _slamLitTicks = 0;
     _lastStepper = 0.0;
     _advShown = 0.0;
     _gt2Open = NO;
@@ -1102,7 +1096,8 @@ bool probeDoubleClickReset(std::string& detail)
   const NSUInteger lowerStart = _docView.subviews.count;
   y += 10; // breathing room above the SLAM section when panels are closed
 
-  // SLAM section (DEV audition: Push/Crush/Mass/Impact across three taps).
+  // SLAM section (DEV audition: Push/Crush/Mass across three taps; Impact
+  // stays parked in research — DSP preserved, hidden from the selector).
   _slamCheck = [NSButton checkboxWithTitle:@"SLAM" target:self action:@selector(slamToggled:)];
   _slamCheck.frame = NSMakeRect(20, y, 180, 22);
   _slamCheck.state = NSControlStateValueOff; // dry start; enable to audition
@@ -1110,7 +1105,7 @@ bool probeDoubleClickReset(std::string& detail)
   y += 30;
   NSTextField* slamFlavorLabel = [self makeLabel:@"Flavor" frame:NSMakeRect(20, y, 110, 22) small:NO];
   [_docView addSubview:slamFlavorLabel];
-  _slamSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Push", @"Crush", @"Mass", @"Impact" ]
+  _slamSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Push", @"Crush", @"Mass" ]
                                               trackingMode:NSSegmentSwitchTrackingSelectOne
                                                     target:self
                                                     action:@selector(slamFlavorSelected:)];
@@ -1127,10 +1122,6 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 30;
-  _slamTrigLabel = [self makeLabel:@"Impact trigger: ○" frame:NSMakeRect(20, y, kWidth - 40, 22)
-                             small:YES];
-  [_docView addSubview:_slamTrigLabel];
-  y += 26;
   y += 14; // gap above the Drive section
 
   // Drive section.
@@ -1401,7 +1392,6 @@ bool probeDoubleClickReset(std::string& detail)
   [self refreshValueLabels:p];
   [self refreshTransposeStatus];
   [self refreshTuner];
-  [self refreshSlamTrig];
   if (_engine->isRunning())
   {
     _statusLabel.stringValue =
@@ -1647,27 +1637,7 @@ bool probeDoubleClickReset(std::string& detail)
 {
   using Flavor = tdm::lab::DevSlam::Flavor;
   const NSInteger seg = sender.selectedSegment;
-  _slam.setFlavor(seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : seg == 3 ? Flavor::Impact
-                                                                                : Flavor::Push);
-}
-
-- (void)refreshSlamTrig
-{
-  // Lock-free fire counter poll: any advance lights the LED for ~200 ms
-  // (two ticks). Distinguishes "not firing" from "firing but quiet".
-  const int64_t fires = _slam.impactFireCount();
-  if (fires != _slamLastFires)
-  {
-    _slamLastFires = fires;
-    _slamLitTicks = 2;
-  }
-  else if (_slamLitTicks > 0)
-  {
-    --_slamLitTicks;
-  }
-  const BOOL lit = _slamLitTicks > 0;
-  _slamTrigLabel.stringValue = lit ? @"Impact trigger: ●" : @"Impact trigger: ○";
-  _slamTrigLabel.textColor = lit ? [NSColor systemGreenColor] : [NSColor secondaryLabelColor];
+  _slam.setFlavor(seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : Flavor::Push);
 }
 
 - (void)refreshTuner
@@ -2052,13 +2022,14 @@ bool probeDoubleClickReset(std::string& detail)
     return fail("amount label wrong");
   _sliders[@(kTagSlamAmount)].doubleValue = 100.0;
   [self paramChanged:_sliders[@(kTagSlamAmount)]];
-  // Flavour selector reaches the router for all four flavours.
-  for (NSInteger seg = 0; seg < 4; ++seg)
+  // Flavour selector reaches the router for all three flavours.
+  if ([_slamSeg segmentCount] != 3)
+    return fail("selector is not Push/Crush/Mass");
+  for (NSInteger seg = 0; seg < 3; ++seg)
   {
     _slamSeg.selectedSegment = seg;
     [self slamFlavorSelected:_slamSeg];
-    const Flavor want =
-        seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : seg == 3 ? Flavor::Impact : Flavor::Push;
+    const Flavor want = seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : Flavor::Push;
     if (_slam.flavor() != want)
       return fail("flavour did not reach router");
   }
@@ -2103,7 +2074,6 @@ bool probeDoubleClickReset(std::string& detail)
           0.8f * std::sin(2.0 * 3.14159265358979 * 100.0 * i / 48000.0) * std::exp(-i / 960.0f);
   }
   // Enabled flavours actually render (each tap live) and rig params stay.
-  // Attacks drive every flavour (Impact needs onsets to render at all).
   const tdm::RigParams before = _engine->rig().params();
   _engine->rig().reset(48000.0, 512);
   _slamCheck.state = NSControlStateValueOff;
@@ -2115,7 +2085,7 @@ bool probeDoubleClickReset(std::string& detail)
     float* bo[1] = {atkDry.data() + b * 512};
     _engine->rig().processBlock(bi, 1, bo, 1, 512);
   }
-  for (NSInteger seg = 0; seg < 4; ++seg)
+  for (NSInteger seg = 0; seg < 3; ++seg)
   {
     _slamSeg.selectedSegment = seg;
     [self slamFlavorSelected:_slamSeg];
@@ -2140,25 +2110,6 @@ bool probeDoubleClickReset(std::string& detail)
   if (before.gateEnabled != after.gateEnabled || before.tight != after.tight
       || before.driveEnabled != after.driveEnabled || before.inputTrimDb != after.inputTrimDb)
     return fail("flavours touched rig params");
-  // Impact telemetry: the attacks fire the detector and light the LED.
-  _slamSeg.selectedSegment = 3;
-  [self slamFlavorSelected:_slamSeg];
-  _slamCheck.state = NSControlStateValueOn;
-  [self slamToggled:_slamCheck];
-  _engine->rig().reset(48000.0, 512);
-  std::vector<float> atkOut(static_cast<size_t>(na), 0.0f);
-  const int64_t firesBefore = _slam.impactFireCount();
-  for (int b = 0; b < 96; ++b)
-  {
-    const float* bi[1] = {atk.data() + b * 512};
-    float* bo[1] = {atkOut.data() + b * 512};
-    _engine->rig().processBlock(bi, 1, bo, 1, 512);
-  }
-  if (_slam.impactFireCount() <= firesBefore)
-    return fail("attacks did not fire Impact");
-  [self refreshSlamTrig];
-  if (![_slamTrigLabel.stringValue containsString:@"●"])
-    return fail("LED did not light");
   // Back to defaults for a clean handoff.
   _slamCheck.state = NSControlStateValueOff;
   [self slamToggled:_slamCheck];
