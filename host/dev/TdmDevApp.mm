@@ -32,6 +32,7 @@
 #include "dsp/lab/Pitch/DevTranspose.h"
 #include "dsp/lab/Slam/DevSlam.h"
 #include "dsp/lab/Alien/DevAlien.h"
+#include "dsp/lab/SpecialFx/DevSpecFx.h"
 #include "dsp/lab/Pitch/DevTransposeUi.h"
 #include "host/TdmEngine.h"
 
@@ -139,7 +140,12 @@ enum SliderTag
   kTagAlienWarpTime,
   kTagAlienWarpHz,
   kTagAlienWarpSt,
-  kTagAlienWarpFb
+  kTagAlienWarpFb,
+  // SPECIAL FX LAB section (laser engine; all live).
+  kTagSpecExpr,
+  kTagSpecSpeed,
+  kTagSpecSens,
+  kTagSpecMix
 };
 
 // GT2 advanced rows use their own tag band (field index + base) with a
@@ -206,6 +212,14 @@ double resetValueForTag(SliderTag tag)
     return 3.0;
   case kTagAlienWarpFb:
     return 0.5;
+  case kTagSpecExpr:
+    return 0.0; // expression heel (dry/unison start)
+  case kTagSpecSpeed:
+    return 60.0;
+  case kTagSpecSens:
+    return 60.0;
+  case kTagSpecMix:
+    return 100.0;
   }
   return 0.0;
 }
@@ -256,6 +270,10 @@ int smokeTest()
     check((float)resetValueForTag(kTagAlienWarpHz) == 100.0f, "reset: alien warp hz -> +100 Hz");
     check((float)resetValueForTag(kTagAlienWarpSt) == 3.0f, "reset: alien warp st -> +3 st");
     check((float)resetValueForTag(kTagAlienWarpFb) == 0.5f, "reset: alien warp fb -> 0.50");
+    check((float)resetValueForTag(kTagSpecExpr) == 0.0f, "reset: spec expr -> heel");
+    check((float)resetValueForTag(kTagSpecSpeed) == 60.0f, "reset: spec speed -> 60");
+    check((float)resetValueForTag(kTagSpecSens) == 60.0f, "reset: spec sens -> 60");
+    check((float)resetValueForTag(kTagSpecMix) == 100.0f, "reset: spec mix -> 100%");
     // Double-click behavior on the real control (defined after the control
     // classes below): a synthesized double-click parks the reset value and
     // fires the normal action exactly once.
@@ -440,6 +458,23 @@ int smokeTest()
 }
 @end
 
+// Momentary push button: fires downAction on press and upAction on
+// release (super tracks the press, so control returns after mouseUp).
+// Used for the Special FX Toe trigger (reference Trigger semantics).
+@interface TdmMomentaryButton : NSButton
+@property(nonatomic) SEL downAction;
+@property(nonatomic) SEL upAction;
+@end
+
+@implementation TdmMomentaryButton
+- (void)mouseDown:(NSEvent*)event
+{
+  [self sendAction:self.downAction to:self.target];
+  [super mouseDown:event];
+  [self sendAction:self.upAction to:self.target];
+}
+@end
+
 // Flipped document view for the scrollable control area: y=0 is visually at
 // the top, so the form stays anchored below the title bar and disclosures
 // only push lower content DOWN (never open blank space above).
@@ -560,6 +595,10 @@ bool probeDoubleClickReset(std::string& detail)
 // FX Lab section (effect selector, sub-selectors, sliders, trigger,
 // transparency, rig-param isolation). Needs no audio.
 - (BOOL)runAlienProbe:(std::string*)detail;
+// Special FX wiring probe (smoke-test only): same pattern for the
+// Special FX Lab section (voice/control/insert selectors, expression
+// + envelope sliders, momentary Toe, transparency, rig isolation).
+- (BOOL)runSpecProbe:(std::string*)detail;
 @end
 
 @implementation DevController
@@ -586,6 +625,14 @@ bool probeDoubleClickReset(std::string& detail)
   NSSegmentedControl* _alienSeg;
   NSSegmentedControl* _alienDirSeg;
   NSSegmentedControl* _alienWarpSeg;
+  // DEV Special FX router (C++ member: outlives the engine; installed
+  // into the rig's pre-gain and post-IR spec seams pre-start. UI drives
+  // it via atomic setters only; installed-but-off is transparent).
+  tdm::specfx::DevSpecFx _spec;
+  NSButton* _specCheck;
+  NSSegmentedControl* _specVoiceSeg;
+  NSSegmentedControl* _specControlSeg;
+  NSSegmentedControl* _specInsertSeg;
   NSWindow* _window;
   NSTextField* _statusLabel;
   NSTextField* _transposeStatus;
@@ -679,6 +726,17 @@ bool probeDoubleClickReset(std::string& detail)
     _alien.setWarpFb(0.5f);
     _alien.setWarpShiftHz(100.0f);
     _alien.setWarpSt(3.0f);
+    // Special FX lab state: off (dry start), Whammy, Manual, heel,
+    // pre-gain insert. Installed into both spec seams pre-start (off-RT).
+    _spec.setEnabled(false);
+    _spec.setVoice(tdm::specfx::DevSpecFx::Voice::Whammy);
+    _spec.setControl(tdm::specfx::DevSpecFx::Control::Manual);
+    _spec.setExpression(0.0f);
+    _spec.setSpeed(0.6f);
+    _spec.setSensitivity(0.6f);
+    _spec.setMix(1.0f);
+    _spec.setTrigger(false);
+    _spec.setInsert(tdm::specfx::DevSpecFx::Insert::Pre);
     _lastStepper = 0.0;
     _advShown = 0.0;
     _gt2Open = NO;
@@ -688,6 +746,8 @@ bool probeDoubleClickReset(std::string& detail)
     _engine->rig().setSlamPostNam(&_slam.postNam());
     _engine->rig().setSlamPostIr(&_slam.postIr());
     _engine->rig().setAlienPostIr(&_alien);
+    _engine->rig().setSpecPre(&_spec.preTap());
+    _engine->rig().setSpecPost(&_spec.postTap());
   }
   return self;
 }
@@ -1336,6 +1396,98 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 30;
+  y += 14; // gap above the Special FX section
+
+  // SPECIAL FX LAB section (DEV research: expression-driven Laser at
+  // pre-gain and post-IR taps. One normalized expression position drives
+  // per-voice heel/toe maps; Manual slider or envelope follower sources
+  // it; Toe forces full expression while held, Manual only).
+  _specCheck = [NSButton checkboxWithTitle:@"Special FX" target:self action:@selector(specToggled:)];
+  _specCheck.frame = NSMakeRect(20, y, 180, 22);
+  _specCheck.state = NSControlStateValueOff; // dry start; enable to audition
+  [_docView addSubview:_specCheck];
+  y += 30;
+  NSTextField* specEngineLabel = [self makeLabel:@"Engine" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:specEngineLabel];
+  NSTextField* specEngineName = [self makeLabel:@"Laser" frame:NSMakeRect(135, y, 110, 22) small:NO];
+  [_docView addSubview:specEngineName];
+  y += 30;
+  NSTextField* specVoiceLabel = [self makeLabel:@"Voice" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:specVoiceLabel];
+  _specVoiceSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Whammy", @"Dual", @"Ring", @"Detune" ]
+                                                   trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                         target:self
+                                                         action:@selector(specVoiceSelected:)];
+  _specVoiceSeg.frame = NSMakeRect(135, y - 2, 380, 26);
+  _specVoiceSeg.selectedSegment = 0;
+  [_docView addSubview:_specVoiceSeg];
+  y += 30;
+  NSTextField* specControlLabel = [self makeLabel:@"Control" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:specControlLabel];
+  _specControlSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Manual", @"Envelope" ]
+                                                     trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                           target:self
+                                                           action:@selector(specControlSelected:)];
+  _specControlSeg.frame = NSMakeRect(135, y - 2, 260, 26);
+  _specControlSeg.selectedSegment = 0;
+  [_docView addSubview:_specControlSeg];
+  y += 30;
+  [self addSliderRow:@"Expression"
+                 tag:kTagSpecExpr
+                 min:0
+                 max:100
+                init:0
+               reset:0
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Speed"
+                 tag:kTagSpecSpeed
+                 min:0
+                 max:100
+                init:60
+               reset:60
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Sensitivity"
+                 tag:kTagSpecSens
+                 min:0
+                 max:100
+                init:60
+               reset:60
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Mix"
+                 tag:kTagSpecMix
+                 min:0
+                 max:100
+                init:100
+               reset:100
+                   y:y
+               width:kWidth];
+  y += 30;
+  NSTextField* specToeLabel = [self makeLabel:@"Trigger" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:specToeLabel];
+  TdmMomentaryButton* specToe = [[TdmMomentaryButton alloc] initWithFrame:NSMakeRect(135, y - 2, 120, 26)];
+  specToe.title = @"Toe";
+  specToe.bezelStyle = NSBezelStyleRounded;
+  specToe.target = self;
+  specToe.downAction = @selector(specToeDown:);
+  specToe.upAction = @selector(specToeUp:);
+  [_docView addSubview:specToe];
+  y += 30;
+  NSTextField* specInsertLabel = [self makeLabel:@"Insert" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:specInsertLabel];
+  _specInsertSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Pre", @"Post" ]
+                                                    trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                          target:self
+                                                          action:@selector(specInsertSelected:)];
+  _specInsertSeg.frame = NSMakeRect(135, y - 2, 200, 26);
+  _specInsertSeg.selectedSegment = 0;
+  [_docView addSubview:_specInsertSeg];
+  y += 30;
   y += 14; // gap above the ToneShape section
 
   // ToneShape section (post-cab; neutral is transparent).
@@ -1440,7 +1592,7 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 34;
-  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no meters. Alien FX Lab post-IR."
+  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no meters. Alien + Special FX labs."
                                 frame:NSMakeRect(20, y, kWidth - 40, 22)
                                 small:YES];
   [_docView addSubview:foot];
@@ -1538,6 +1690,14 @@ bool probeDoubleClickReset(std::string& detail)
       [NSString stringWithFormat:@"%+.0f Hz", _alien.warpShiftHz()];
   _valueLabels[@(kTagAlienWarpSt)].stringValue = fmtSt(_alien.warpSt());
   _valueLabels[@(kTagAlienWarpFb)].stringValue = fmt01(_alien.warpFb());
+  _valueLabels[@(kTagSpecExpr)].stringValue =
+      [NSString stringWithFormat:@"%.0f%%", _spec.expression() * 100.0];
+  _valueLabels[@(kTagSpecSpeed)].stringValue =
+      [NSString stringWithFormat:@"%.0f%%", _spec.speed() * 100.0];
+  _valueLabels[@(kTagSpecSens)].stringValue =
+      [NSString stringWithFormat:@"%.0f%%", _spec.sensitivity() * 100.0];
+  _valueLabels[@(kTagSpecMix)].stringValue =
+      [NSString stringWithFormat:@"%.0f%%", _spec.mix01() * 100.0];
 }
 
 // GT2 advanced value labels from stored (pending) config.
@@ -1682,6 +1842,18 @@ bool probeDoubleClickReset(std::string& detail)
     break;
   case kTagAlienWarpFb:
     _alien.setWarpFb((float)v);
+    break;
+  case kTagSpecExpr:
+    _spec.setExpression((float)(v / 100.0)); // live lab controls
+    break;
+  case kTagSpecSpeed:
+    _spec.setSpeed((float)(v / 100.0));
+    break;
+  case kTagSpecSens:
+    _spec.setSensitivity((float)(v / 100.0));
+    break;
+  case kTagSpecMix:
+    _spec.setMix((float)(v / 100.0));
     break;
   default:
     break;
@@ -1887,6 +2059,45 @@ bool probeDoubleClickReset(std::string& detail)
 {
   (void)sender;
   _alien.triggerLaser();
+}
+
+// Special FX actions: lock-free atomic stores adopted at the next audio
+// block, exactly like the rig handoff. Toe is momentary (down/up pair).
+- (void)specToggled:(NSButton*)sender
+{
+  _spec.setEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)specVoiceSelected:(NSSegmentedControl*)sender
+{
+  using Voice = tdm::specfx::DevSpecFx::Voice;
+  const NSInteger seg = sender.selectedSegment;
+  _spec.setVoice(seg == 1 ? Voice::Dual : seg == 2 ? Voice::Ring : seg == 3 ? Voice::Detune
+                                                                            : Voice::Whammy);
+}
+
+- (void)specControlSelected:(NSSegmentedControl*)sender
+{
+  using Control = tdm::specfx::DevSpecFx::Control;
+  _spec.setControl(sender.selectedSegment == 1 ? Control::Envelope : Control::Manual);
+}
+
+- (void)specInsertSelected:(NSSegmentedControl*)sender
+{
+  using Insert = tdm::specfx::DevSpecFx::Insert;
+  _spec.setInsert(sender.selectedSegment == 1 ? Insert::Post : Insert::Pre);
+}
+
+- (void)specToeDown:(id)sender
+{
+  (void)sender;
+  _spec.setTrigger(true);
+}
+
+- (void)specToeUp:(id)sender
+{
+  (void)sender;
+  _spec.setTrigger(false);
 }
 
 - (void)refreshTuner
@@ -2562,6 +2773,219 @@ bool probeDoubleClickReset(std::string& detail)
   return YES;
 }
 
+- (BOOL)runSpecProbe:(std::string*)detail
+{
+  auto fail = [&](const char* msg) {
+    *detail = std::string(" [spec: ") + msg + "]";
+    return NO;
+  };
+  using Voice = tdm::specfx::DevSpecFx::Voice;
+  using Control = tdm::specfx::DevSpecFx::Control;
+  using Insert = tdm::specfx::DevSpecFx::Insert;
+  // Defaults: checkbox off, Whammy, Manual, heel, 60/60, 100%, Pre.
+  if (_specCheck.state != NSControlStateValueOff)
+    return fail("checkbox not off");
+  if (_spec.isEnabled() || _spec.voice() != Voice::Whammy || _spec.control() != Control::Manual)
+    return fail("router defaults wrong");
+  if (_spec.expression() != 0.0f || _spec.speed() != 0.6f || _spec.sensitivity() != 0.6f
+      || _spec.mix01() != 1.0f || _spec.trigger() || _spec.insert() != Insert::Pre)
+    return fail("router param defaults wrong");
+  if (_specVoiceSeg.selectedSegment != 0 || _specControlSeg.selectedSegment != 0
+      || _specInsertSeg.selectedSegment != 0)
+    return fail("segments not on Whammy/Manual/Pre");
+  if (_engine->rig().specPre() == nullptr || _engine->rig().specPost() == nullptr)
+    return fail("seams not installed");
+  // Drive every slider through the real action; adoption + label.
+  _sliders[@(kTagSpecExpr)].doubleValue = 75.0;
+  [self paramChanged:_sliders[@(kTagSpecExpr)]];
+  if (std::fabs(_spec.expression() - 0.75f) > 1e-6f)
+    return fail("expression did not reach router");
+  [self refreshValueLabels:_engine->rig().params()];
+  if (![_valueLabels[@(kTagSpecExpr)].stringValue isEqualToString:@"75%"])
+    return fail("expression label wrong");
+  _sliders[@(kTagSpecExpr)].doubleValue = 0.0;
+  [self paramChanged:_sliders[@(kTagSpecExpr)]];
+  _sliders[@(kTagSpecSpeed)].doubleValue = 80.0;
+  [self paramChanged:_sliders[@(kTagSpecSpeed)]];
+  if (std::fabs(_spec.speed() - 0.8f) > 1e-6f)
+    return fail("speed did not reach router");
+  _sliders[@(kTagSpecSens)].doubleValue = 40.0;
+  [self paramChanged:_sliders[@(kTagSpecSens)]];
+  if (std::fabs(_spec.sensitivity() - 0.4f) > 1e-6f)
+    return fail("sensitivity did not reach router");
+  _sliders[@(kTagSpecMix)].doubleValue = 50.0;
+  [self paramChanged:_sliders[@(kTagSpecMix)]];
+  if (std::fabs(_spec.mix01() - 0.5f) > 1e-6f)
+    return fail("mix did not reach router");
+  _sliders[@(kTagSpecSpeed)].doubleValue = 60.0;
+  [self paramChanged:_sliders[@(kTagSpecSpeed)]];
+  _sliders[@(kTagSpecSens)].doubleValue = 60.0;
+  [self paramChanged:_sliders[@(kTagSpecSens)]];
+  _sliders[@(kTagSpecMix)].doubleValue = 100.0;
+  [self paramChanged:_sliders[@(kTagSpecMix)]];
+  // Selectors reach the router (voice + control + insert).
+  if ([_specVoiceSeg segmentCount] != 4 || [_specControlSeg segmentCount] != 2
+      || [_specInsertSeg segmentCount] != 2)
+    return fail("selector segment counts wrong");
+  for (NSInteger seg = 0; seg < 4; ++seg)
+  {
+    _specVoiceSeg.selectedSegment = seg;
+    [self specVoiceSelected:_specVoiceSeg];
+    const Voice want =
+        seg == 1 ? Voice::Dual : seg == 2 ? Voice::Ring : seg == 3 ? Voice::Detune : Voice::Whammy;
+    if (_spec.voice() != want)
+      return fail("voice did not reach router");
+  }
+  for (NSInteger seg = 0; seg < 2; ++seg)
+  {
+    _specControlSeg.selectedSegment = seg;
+    [self specControlSelected:_specControlSeg];
+    if (_spec.control() != (seg == 1 ? Control::Envelope : Control::Manual))
+      return fail("control did not reach router");
+  }
+  for (NSInteger seg = 0; seg < 2; ++seg)
+  {
+    _specInsertSeg.selectedSegment = seg;
+    [self specInsertSelected:_specInsertSeg];
+    if (_spec.insert() != (seg == 1 ? Insert::Post : Insert::Pre))
+      return fail("insert did not reach router");
+  }
+  _specVoiceSeg.selectedSegment = 0;
+  [self specVoiceSelected:_specVoiceSeg];
+  _specControlSeg.selectedSegment = 0;
+  [self specControlSelected:_specControlSeg];
+  _specInsertSeg.selectedSegment = 0;
+  [self specInsertSelected:_specInsertSeg];
+  // Momentary Toe toggles the trigger atomic down/up.
+  [self specToeDown:nil];
+  if (!_spec.trigger())
+    return fail("toe down lost");
+  [self specToeUp:nil];
+  if (_spec.trigger())
+    return fail("toe up lost");
+  // Transparency: installed-but-off renders bit-identical to no seams.
+  _engine->rig().reset(48000.0, 512);
+  const int n = 512 * 16; // block-aligned: no ragged tail reads
+  std::vector<float> in(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i)
+    in[static_cast<size_t>(i)] = 0.5f * std::sin(2.0 * 3.14159265358979 * 110.0 * i / 48000.0);
+  std::vector<float> off(static_cast<size_t>(n), 0.0f), bare(static_cast<size_t>(n), 0.0f);
+  _specCheck.state = NSControlStateValueOff;
+  [self specToggled:_specCheck];
+  for (int b = 0; b < 16; ++b)
+  {
+    const float* bi[1] = {in.data() + b * 512};
+    float* bo[1] = {off.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().setSpecPre(nullptr);
+  _engine->rig().setSpecPost(nullptr);
+  _engine->rig().reset(48000.0, 512);
+  for (int b = 0; b < 16; ++b)
+  {
+    const float* bi[1] = {in.data() + b * 512};
+    float* bo[1] = {bare.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().setSpecPre(&_spec.preTap());
+  _engine->rig().setSpecPost(&_spec.postTap());
+  if (off != bare)
+    return fail("installed-but-off changed rig output");
+  // Attack pips for the voice loop + envelope response.
+  const int na = 512 * 96;
+  std::vector<float> atk(static_cast<size_t>(na), 0.0f);
+  for (int p = 0; p < 2; ++p)
+  {
+    const int at = 24000 + p * 24000;
+    for (int i = 0; i < 4800 && at + i < na; ++i)
+      atk[static_cast<size_t>(at + i)] +=
+          0.8f * std::sin(2.0 * 3.14159265358979 * 100.0 * i / 48000.0) * std::exp(-i / 960.0f);
+  }
+  const tdm::RigParams before = _engine->rig().params();
+  _engine->rig().reset(48000.0, 512);
+  _specCheck.state = NSControlStateValueOff;
+  [self specToggled:_specCheck];
+  std::vector<float> atkDry(static_cast<size_t>(na), 0.0f);
+  for (int b = 0; b < 96; ++b)
+  {
+    const float* bi[1] = {atk.data() + b * 512};
+    float* bo[1] = {atkDry.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  // Enabled voices render at toe (manual) for both inserts.
+  _sliders[@(kTagSpecExpr)].doubleValue = 100.0;
+  [self paramChanged:_sliders[@(kTagSpecExpr)]];
+  for (NSInteger ins = 0; ins < 2; ++ins)
+  {
+    _specInsertSeg.selectedSegment = ins;
+    [self specInsertSelected:_specInsertSeg];
+    for (NSInteger seg = 0; seg < 4; ++seg)
+    {
+      _specVoiceSeg.selectedSegment = seg;
+      [self specVoiceSelected:_specVoiceSeg];
+      _specCheck.state = NSControlStateValueOn;
+      [self specToggled:_specCheck];
+      std::vector<float> wet(static_cast<size_t>(na), 0.0f);
+      for (int b = 0; b < 96; ++b)
+      {
+        const float* bi[1] = {atk.data() + b * 512};
+        float* bo[1] = {wet.data() + b * 512};
+        _engine->rig().processBlock(bi, 1, bo, 1, 512);
+      }
+      if (wet == atkDry)
+        return fail("voice rendered dry");
+      bool finite = true;
+      for (float v : wet)
+        finite = finite && std::isfinite(v);
+      if (!finite)
+        return fail("voice non-finite");
+    }
+  }
+  // Envelope mode: the follower responds to the pips (pre-tap telemetry).
+  _specControlSeg.selectedSegment = 1;
+  [self specControlSelected:_specControlSeg];
+  _specInsertSeg.selectedSegment = 0;
+  [self specInsertSelected:_specInsertSeg];
+  _specVoiceSeg.selectedSegment = 0;
+  [self specVoiceSelected:_specVoiceSeg];
+  _specCheck.state = NSControlStateValueOn;
+  [self specToggled:_specCheck];
+  {
+    std::vector<float> wet(static_cast<size_t>(na), 0.0f);
+    float posMid = 0.0f;
+    for (int b = 0; b < 96; ++b)
+    {
+      const float* bi[1] = {atk.data() + b * 512};
+      float* bo[1] = {wet.data() + b * 512};
+      _engine->rig().processBlock(bi, 1, bo, 1, 512);
+      if (b == 52) // just after the first pip attack (block ~47)
+        posMid = _spec.preExpressionPos();
+    }
+    if (posMid < 0.2f)
+      return fail("envelope did not respond");
+    if (wet == atkDry)
+      return fail("envelope rendered dry");
+  }
+  const tdm::RigParams after = _engine->rig().params();
+  if (before.gateEnabled != after.gateEnabled || before.tight != after.tight
+      || before.driveEnabled != after.driveEnabled || before.inputTrimDb != after.inputTrimDb)
+    return fail("voices touched rig params");
+  // Back to defaults for a clean handoff.
+  _specCheck.state = NSControlStateValueOff;
+  [self specToggled:_specCheck];
+  _specVoiceSeg.selectedSegment = 0;
+  [self specVoiceSelected:_specVoiceSeg];
+  _specControlSeg.selectedSegment = 0;
+  [self specControlSelected:_specControlSeg];
+  _specInsertSeg.selectedSegment = 0;
+  [self specInsertSelected:_specInsertSeg];
+  _sliders[@(kTagSpecExpr)].doubleValue = 0.0;
+  [self paramChanged:_sliders[@(kTagSpecExpr)]];
+  if (![self checkDocGeometry:detail])
+    return NO;
+  return YES;
+}
+
 - (void)chooseNam:(id)sender
 {
   (void)sender;
@@ -2638,6 +3062,8 @@ bool probeTransposeUiFull(std::string& detail)
       ok = [controller runSlamProbe:&detail];
     if (ok == YES)
       ok = [controller runAlienProbe:&detail];
+    if (ok == YES)
+      ok = [controller runSpecProbe:&detail];
     delete engine; // stage (controller ivar) still alive: correct order
   }
   return ok == YES;

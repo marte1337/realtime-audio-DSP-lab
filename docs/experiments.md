@@ -1967,3 +1967,77 @@ park. Pre-NAM placement (intermod through the amp) still unexplored.
   core even though it failed transparent transpose: same DSP,
   opposite quality criterion.
 
+---
+
+## Date
+
+2026-10-11
+
+### Module
+
+Special FX Laser (`dsp/lab/SpecialFx/`; DEV-only pre-gain + post-IR taps)
+
+### Hypothesis
+
+The Alien Lab's one-shot triggers missed the reference "laser" feel
+(hardware: character differs significantly). The reference behavior is
+EXPRESSION-driven: one 0..1 position (pedal or envelope) sweeping
+preset heel/toe maps across pitch voices + ring mod. Rebuilding around
+expression (not triggers) should land much closer musically. Full
+Confirmed/Inferred/Unknown record: `docs/special-fx-reference.md`.
+
+### Implementation
+
+`SpecLaser.h` — 2× AlienDoppler legs + AlienRing + peak envelope
+follower + 4 voice maps (Whammy 0→+12, Dual ±12 contrary, Ring
+60→2000 Hz log, Detune chorus) + momentary Toe. All legs run always
+(primed); voice select crossfades gains. `DevSpecFx.h` — twin engines
+(pre/post) with shared atomics, insert A/B, dip + 50 ms history preroll
+on transitions. Seams: `setSpecPre` (pre-TightDrive), `setSpecPost`
+(post-alien, pre-ToneShape). Production untouched.
+
+### Audition setup
+
+Offline only: `tdm_spec_study` (9 renders, synth DI twin of AlienStudy);
+DEV app SPECIAL FX LAB section (Voice/Control/Expression/Speed/
+Sensitivity/Mix/Toe/Insert), probe-green. Hardware NOT yet auditioned.
+
+### Expected behavior
+
+Heel = dry/unison (whammy/dual bit-exact), toe = octave split / 2 kHz
+ring / wide chorus; envelope tracks picking (sens 0.6 ≈ full sweep on
+hard DI hits pre-gain); Toe forces full sweep while held (Manual only);
+voice/insert switches click-free. CPU < 0.5%/engine, latency 35 ms
+bound. Sag: −12 renders ~−10.5, +12 renders ~+11.2 (toward unison).
+
+### Listening result
+
+NOT YET AUDITIONED. Offline math verified; musical verdict pending.
+Order: Whammy pre → Dual → Ring → Detune → Envelope → post A/B.
+
+### Problems
+
+- Endpoint sag (~1.5 st at −12): octave-split toe won't be a true
+  octave. Character or defect? Ears + possible pitch-sync follow-up.
+- Post-insert envelope saturates (compressed amp signal): sensitivity
+  must drop; document, don't auto-compensate (yet?).
+- Detune LFO through 30 ms doppler smoothing: laggy at 4 Hz? Measure
+  if chorus feels seasick vs smooth.
+
+### Next step
+
+Hardware audition → keep/revoice/park per voice → Glitch proposal
+(`docs/special-fx-reference.md` §6) becomes next milestone only after
+Laser verdict.
+
+### Transferable learning
+
+- Router Rise macros must glide BOTH ways: target drops mid-rise
+  (insert/mix moves) snapped m to target = 0.42 jumps. Fixed in
+  DevSpecFx AND backported to DevAlien + regression test.
+- Narrow Goertzel is the wrong oracle for saggy pitch: use zero-cross
+  bands / band scans, documented at each site.
+- Follower state MUST sanitize NaN input (permanent poison otherwise).
+- Expression-first architecture (one position → many maps, two sources
+  + momentary force) is a reusable lab pattern for Glitch Chaos later.
+

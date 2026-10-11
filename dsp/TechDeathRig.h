@@ -67,6 +67,7 @@
 #include "dsp/Tuner/Tuner.h"
 #include "dsp/AlienInsert.h"
 #include "dsp/SlamInsert.h"
+#include "dsp/SpecInsert.h"
 #include "dsp/TransposeInsert.h"
 #include "dsp/Gate/TechDeathGate.h"
 #include "dsp/TightDrive/TightDrive.h"
@@ -268,6 +269,14 @@ public:
   void setAlienPostIr(AlienInsert* insert) { alienPostIr_ = insert; }
   AlienInsert* alienPostIr() const { return alienPostIr_; }
 
+  // DEV Special FX seams (OFF-RT ONLY, same contract). Pre-gain tap
+  // (post-transpose, pre-TightDrive) and post-IR tap (post-alien,
+  // pre-ToneShape) for insertion-point A/B. Null by default.
+  void setSpecPre(SpecInsert* insert) { specPre_ = insert; }
+  void setSpecPost(SpecInsert* insert) { specPost_ = insert; }
+  SpecInsert* specPre() const { return specPre_; }
+  SpecInsert* specPost() const { return specPost_; }
+
   // RT-safe after reset(). inputs[nIn][nFrames] -> outputs[nOut][nOut].
   // Changed parameters are applied once here, at the block boundary.
   void processBlock(const float* const* inputs, int numInputChannels, float* const* outputs,
@@ -306,6 +315,8 @@ private:
   SlamInsert* slamPostNam_ = nullptr;
   SlamInsert* slamPostIr_ = nullptr;
   AlienInsert* alienPostIr_ = nullptr; // DEV-only Alien tap, null in production
+  SpecInsert* specPre_ = nullptr;      // DEV-only Special FX taps, null in production
+  SpecInsert* specPost_ = nullptr;
   TightDrive drive_;
   NamStage nam_;
   CabIrStage ir_;

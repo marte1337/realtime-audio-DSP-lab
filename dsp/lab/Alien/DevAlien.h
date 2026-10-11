@@ -112,12 +112,28 @@ public:
       }
       else if (phase_ == Rise)
       {
-        m_ += riseStep_;
-        if (m_ >= mixTgt)
+        // Glide BOTH ways: mix can drop mid-rise (slider drag), and
+        // snapping m down to it would jump the output in one sample.
+        if (m_ < mixTgt)
         {
-          m_ = mixTgt;
-          phase_ = Steady;
+          m_ += riseStep_;
+          if (m_ >= mixTgt)
+          {
+            m_ = mixTgt;
+            phase_ = Steady;
+          }
         }
+        else if (m_ > mixTgt)
+        {
+          m_ -= dipStep_;
+          if (m_ <= mixTgt)
+          {
+            m_ = mixTgt;
+            phase_ = Steady;
+          }
+        }
+        else
+          phase_ = Steady;
       }
       else if (phase_ == Steady)
       {

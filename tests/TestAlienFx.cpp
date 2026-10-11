@@ -592,4 +592,37 @@ void runAlienFxTests()
     TDM_CHECK(tdm_test::allFinite(io.data(), n), "alien hostile switching finite");
     TDM_CHECK(maxStep(io) < 0.3f, "alien hostile switching click-safe");
   }
+  // Mix dropped mid-rise glides down (never snaps m to target). Rise
+  // is entered from each dip bottom (effect switch); the drop lands at
+  // varied offsets so no single coincidence zero can hide the snap.
+  {
+    auto sig = sine(0.4f, 440.0f, static_cast<int>(4 * kSr));
+    DevAlien d;
+    d.setShiftHz(150.0f);
+    d.reset(kSr, 256);
+    d.setEnabled(true);
+    std::vector<float> io = sig;
+    int off = 0;
+    auto run = [&](int count) {
+      for (int k = 0; k < count; k += 32)
+      {
+        float* p = io.data() + off;
+        d.process(p, p, 32);
+        off += 32;
+      }
+    };
+    run(2048); // settle Steady at m=1
+    for (int k = 0; k < 8; ++k)
+    {
+      d.setEffect((k % 2 == 0) ? AlienEffect::Laser : AlienEffect::Frequency);
+      run(64 + 40 + 16 * k); // dip (64) + varied rise offsets
+      d.setMix(0.0f);        // mid-rise drop
+      run(400);
+      d.setMix(1.0f);
+      run(1200); // settle back to Steady m=1
+    }
+    io.resize(static_cast<size_t>(off)); // measure the processed prefix only
+    TDM_CHECK(maxStep(io) < 0.1f, "alien mix-drop mid-rise glides");
+    TDM_CHECK(tdm_test::allFinite(io.data(), (int)io.size()), "alien mix-drop mid-rise finite");
+  }
 }
