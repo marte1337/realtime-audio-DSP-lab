@@ -31,6 +31,7 @@
 #include "dsp/Tuner/Tuner.h"
 #include "dsp/lab/Pitch/DevTranspose.h"
 #include "dsp/lab/Slam/DevSlam.h"
+#include "dsp/lab/Alien/DevAlien.h"
 #include "dsp/lab/Pitch/DevTransposeUi.h"
 #include "host/TdmEngine.h"
 
@@ -129,7 +130,16 @@ enum SliderTag
   kTagOutTrim,
   kTagShift, // transpose section: shared shift + T3K tonality (live)
   kTagT3kTonality,
-  kTagSlamAmount // SLAM section: shared 0..100% macro (live)
+  kTagSlamAmount, // SLAM section: shared 0..100% macro (live)
+  // ALIEN FX LAB section (post-IR tap; all live).
+  kTagAlienMix,
+  kTagAlienShiftHz,
+  kTagAlienSweepMs,
+  kTagAlienDepthMs,
+  kTagAlienWarpTime,
+  kTagAlienWarpHz,
+  kTagAlienWarpSt,
+  kTagAlienWarpFb
 };
 
 // GT2 advanced rows use their own tag band (field index + base) with a
@@ -180,6 +190,22 @@ double resetValueForTag(SliderTag tag)
     return 0.0; // tonality off
   case kTagSlamAmount:
     return 100.0; // SLAM macro default: study reference per flavour
+  case kTagAlienMix:
+    return 100.0; // alien lab defaults: full wet, lab starting points
+  case kTagAlienShiftHz:
+    return 150.0;
+  case kTagAlienSweepMs:
+    return 120.0;
+  case kTagAlienDepthMs:
+    return 12.0;
+  case kTagAlienWarpTime:
+    return 220.0;
+  case kTagAlienWarpHz:
+    return 100.0;
+  case kTagAlienWarpSt:
+    return 3.0;
+  case kTagAlienWarpFb:
+    return 0.5;
   }
   return 0.0;
 }
@@ -222,6 +248,14 @@ int smokeTest()
     check((float)resetValueForTag(kTagShift) == 0.0f, "reset: shift -> 0 st");
     check((float)resetValueForTag(kTagT3kTonality) == 0.0f, "reset: tonality -> Off");
     check((float)resetValueForTag(kTagSlamAmount) == 100.0f, "reset: slam amount -> 100%");
+    check((float)resetValueForTag(kTagAlienMix) == 100.0f, "reset: alien mix -> 100%");
+    check((float)resetValueForTag(kTagAlienShiftHz) == 150.0f, "reset: alien shift -> +150 Hz");
+    check((float)resetValueForTag(kTagAlienSweepMs) == 120.0f, "reset: alien sweep -> 120 ms");
+    check((float)resetValueForTag(kTagAlienDepthMs) == 12.0f, "reset: alien depth -> 12 ms");
+    check((float)resetValueForTag(kTagAlienWarpTime) == 220.0f, "reset: alien warp time -> 220 ms");
+    check((float)resetValueForTag(kTagAlienWarpHz) == 100.0f, "reset: alien warp hz -> +100 Hz");
+    check((float)resetValueForTag(kTagAlienWarpSt) == 3.0f, "reset: alien warp st -> +3 st");
+    check((float)resetValueForTag(kTagAlienWarpFb) == 0.5f, "reset: alien warp fb -> 0.50");
     // Double-click behavior on the real control (defined after the control
     // classes below): a synthesized double-click parks the reset value and
     // fires the normal action exactly once.
@@ -522,6 +556,10 @@ bool probeDoubleClickReset(std::string& detail)
 // selector, and Amount slider programmatically and verifies router state,
 // transparency, and rig-param isolation. Needs no audio.
 - (BOOL)runSlamProbe:(std::string*)detail;
+// Alien FX wiring probe (smoke-test only): same pattern for the Alien
+// FX Lab section (effect selector, sub-selectors, sliders, trigger,
+// transparency, rig-param isolation). Needs no audio.
+- (BOOL)runAlienProbe:(std::string*)detail;
 @end
 
 @implementation DevController
@@ -539,6 +577,15 @@ bool probeDoubleClickReset(std::string& detail)
   tdm::lab::DevSlam _slam;
   NSButton* _slamCheck;
   NSSegmentedControl* _slamSeg;
+  // DEV Alien FX router (C++ member: outlives the engine; installed into
+  // the rig's post-IR alien seam pre-start. UI drives it via atomic
+  // setters only, exactly like the rig handoff; installed-but-off is
+  // transparent).
+  tdm::alien::DevAlien _alien;
+  NSButton* _alienCheck;
+  NSSegmentedControl* _alienSeg;
+  NSSegmentedControl* _alienDirSeg;
+  NSSegmentedControl* _alienWarpSeg;
   NSWindow* _window;
   NSTextField* _statusLabel;
   NSTextField* _transposeStatus;
@@ -618,6 +665,20 @@ bool probeDoubleClickReset(std::string& detail)
     _slam.setEnabled(false);
     _slam.setFlavor(tdm::lab::DevSlam::Flavor::Push);
     _slam.setAmount01(1.0f);
+    // Alien FX lab state: off (dry start), Frequency, lab starting
+    // points. Installed into the post-IR seam pre-start (off-RT).
+    _alien.setEnabled(false);
+    _alien.setEffect(tdm::alien::DevAlien::Effect::Frequency);
+    _alien.setMix(1.0f);
+    _alien.setShiftHz(150.0f);
+    _alien.setLaserDir(0);
+    _alien.setSweepMs(120.0f);
+    _alien.setDepthMs(12.0f);
+    _alien.setWarpMode(0);
+    _alien.setWarpTimeMs(220.0f);
+    _alien.setWarpFb(0.5f);
+    _alien.setWarpShiftHz(100.0f);
+    _alien.setWarpSt(3.0f);
     _lastStepper = 0.0;
     _advShown = 0.0;
     _gt2Open = NO;
@@ -626,6 +687,7 @@ bool probeDoubleClickReset(std::string& detail)
     _engine->rig().setSlamPreDrive(&_slam.preDrive());
     _engine->rig().setSlamPostNam(&_slam.postNam());
     _engine->rig().setSlamPostIr(&_slam.postIr());
+    _engine->rig().setAlienPostIr(&_alien);
   }
   return self;
 }
@@ -1158,6 +1220,124 @@ bool probeDoubleClickReset(std::string& detail)
                width:kWidth];
   y += 40;
 
+  // ALIEN FX LAB section (DEV research: Frequency | Laser | Warp at the
+  // post-IR tap, pre-ToneShape. All rows stay visible — the router dips
+  // through dry on effect switches, so every control is live anytime).
+  _alienCheck = [NSButton checkboxWithTitle:@"Alien FX" target:self action:@selector(alienToggled:)];
+  _alienCheck.frame = NSMakeRect(20, y, 180, 22);
+  _alienCheck.state = NSControlStateValueOff; // dry start; enable to audition
+  [_docView addSubview:_alienCheck];
+  y += 30;
+  NSTextField* alienEffectLabel = [self makeLabel:@"Effect" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:alienEffectLabel];
+  _alienSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Frequency", @"Laser", @"Warp" ]
+                                               trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                     target:self
+                                                     action:@selector(alienEffectSelected:)];
+  _alienSeg.frame = NSMakeRect(135, y - 2, 340, 26);
+  _alienSeg.selectedSegment = 0;
+  [_docView addSubview:_alienSeg];
+  y += 30;
+  [self addSliderRow:@"Mix"
+                 tag:kTagAlienMix
+                 min:0
+                 max:100
+                init:100
+               reset:100
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Shift Hz" // UI range: study sweep; core allows +-2000
+                 tag:kTagAlienShiftHz
+                 min:-600
+                 max:600
+                init:150
+               reset:150
+                   y:y
+               width:kWidth];
+  y += 30;
+  NSTextField* alienDirLabel = [self makeLabel:@"Laser" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:alienDirLabel];
+  _alienDirSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Down", @"Up", @"Cycle" ]
+                                                  trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                        target:self
+                                                        action:@selector(alienDirSelected:)];
+  _alienDirSeg.frame = NSMakeRect(135, y - 2, 300, 26);
+  _alienDirSeg.selectedSegment = 0;
+  [_docView addSubview:_alienDirSeg];
+  y += 30;
+  [self addSliderRow:@"Sweep ms"
+                 tag:kTagAlienSweepMs
+                 min:tdm::alien::AlienLaser::kMinSweepMs
+                 max:tdm::alien::AlienLaser::kMaxSweepMs
+                init:120
+               reset:120
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Depth ms"
+                 tag:kTagAlienDepthMs
+                 min:tdm::alien::AlienLaser::kMinDepthMs
+                 max:tdm::alien::AlienLaser::kMaxDepthMs
+                init:12
+               reset:12
+                   y:y
+               width:kWidth];
+  y += 30;
+  NSButton* alienTrigger = [NSButton buttonWithTitle:@"Trigger Laser"
+                                              target:self
+                                              action:@selector(alienTrigger:)];
+  alienTrigger.frame = NSMakeRect(135, y - 2, 160, 26);
+  [_docView addSubview:alienTrigger];
+  y += 30;
+  NSTextField* alienWarpLabel = [self makeLabel:@"Warp" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:alienWarpLabel];
+  _alienWarpSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Freq", @"Pitch" ]
+                                                   trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                         target:self
+                                                         action:@selector(alienWarpModeSelected:)];
+  _alienWarpSeg.frame = NSMakeRect(135, y - 2, 220, 26);
+  _alienWarpSeg.selectedSegment = 0;
+  [_docView addSubview:_alienWarpSeg];
+  y += 30;
+  [self addSliderRow:@"Warp Time" // UI max 600 ms: router pre-roll budget
+                 tag:kTagAlienWarpTime
+                 min:tdm::alien::AlienWarp::kMinTimeMs
+                 max:600
+                init:220
+               reset:220
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Warp Hz"
+                 tag:kTagAlienWarpHz
+                 min:tdm::alien::AlienWarp::kMinShiftHz
+                 max:tdm::alien::AlienWarp::kMaxShiftHz
+                init:100
+               reset:100
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Warp st"
+                 tag:kTagAlienWarpSt
+                 min:tdm::alien::AlienDoppler::kMinSt
+                 max:tdm::alien::AlienDoppler::kMaxSt
+                init:3
+               reset:3
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Warp Fdbk"
+                 tag:kTagAlienWarpFb
+                 min:0
+                 max:tdm::alien::AlienWarp::kMaxFeedback
+                init:0.5
+               reset:0.5
+                   y:y
+               width:kWidth];
+  y += 30;
+  y += 14; // gap above the ToneShape section
+
   // ToneShape section (post-cab; neutral is transparent).
   _shapeCheck = [NSButton checkboxWithTitle:@"ToneShape" target:self action:@selector(shapeToggled:)];
   _shapeCheck.frame = NSMakeRect(20, y, 180, 22);
@@ -1260,7 +1440,7 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 34;
-  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no meters, no experimental FX."
+  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no meters. Alien FX Lab post-IR."
                                 frame:NSMakeRect(20, y, kWidth - 40, 22)
                                 small:YES];
   [_docView addSubview:foot];
@@ -1344,6 +1524,20 @@ bool probeDoubleClickReset(std::string& detail)
   _valueLabels[@(kTagT3kTonality)].stringValue = fmtTonality(_stage.t3kTonalityHz());
   _valueLabels[@(kTagSlamAmount)].stringValue =
       [NSString stringWithFormat:@"%.0f%%", _slam.amount01() * 100.0];
+  _valueLabels[@(kTagAlienMix)].stringValue =
+      [NSString stringWithFormat:@"%.0f%%", _alien.mix01() * 100.0];
+  _valueLabels[@(kTagAlienShiftHz)].stringValue =
+      [NSString stringWithFormat:@"%+.0f Hz", _alien.shiftHz()];
+  _valueLabels[@(kTagAlienSweepMs)].stringValue =
+      [NSString stringWithFormat:@"%.0f ms", _alien.sweepMs()];
+  _valueLabels[@(kTagAlienDepthMs)].stringValue =
+      [NSString stringWithFormat:@"%.1f ms", _alien.depthMs()];
+  _valueLabels[@(kTagAlienWarpTime)].stringValue =
+      [NSString stringWithFormat:@"%.0f ms", _alien.warpTimeMs()];
+  _valueLabels[@(kTagAlienWarpHz)].stringValue =
+      [NSString stringWithFormat:@"%+.0f Hz", _alien.warpShiftHz()];
+  _valueLabels[@(kTagAlienWarpSt)].stringValue = fmtSt(_alien.warpSt());
+  _valueLabels[@(kTagAlienWarpFb)].stringValue = fmt01(_alien.warpFb());
 }
 
 // GT2 advanced value labels from stored (pending) config.
@@ -1464,6 +1658,30 @@ bool probeDoubleClickReset(std::string& detail)
     break;
   case kTagSlamAmount:
     _slam.setAmount01((float)(v / 100.0)); // live macro 0..100%
+    break;
+  case kTagAlienMix:
+    _alien.setMix((float)(v / 100.0)); // live lab controls
+    break;
+  case kTagAlienShiftHz:
+    _alien.setShiftHz((float)v);
+    break;
+  case kTagAlienSweepMs:
+    _alien.setSweepMs((float)v);
+    break;
+  case kTagAlienDepthMs:
+    _alien.setDepthMs((float)v);
+    break;
+  case kTagAlienWarpTime:
+    _alien.setWarpTimeMs((float)v);
+    break;
+  case kTagAlienWarpHz:
+    _alien.setWarpShiftHz((float)v);
+    break;
+  case kTagAlienWarpSt:
+    _alien.setWarpSt((float)v);
+    break;
+  case kTagAlienWarpFb:
+    _alien.setWarpFb((float)v);
     break;
   default:
     break;
@@ -1638,6 +1856,37 @@ bool probeDoubleClickReset(std::string& detail)
   using Flavor = tdm::lab::DevSlam::Flavor;
   const NSInteger seg = sender.selectedSegment;
   _slam.setFlavor(seg == 1 ? Flavor::Crush : seg == 2 ? Flavor::Mass : Flavor::Push);
+}
+
+// Alien FX actions: lock-free atomic stores adopted at the next audio
+// block, exactly like the rig handoff. Effect/enable changes dip through
+// dry; the trigger fires one laser sweep (Down/Up) on demand.
+- (void)alienToggled:(NSButton*)sender
+{
+  _alien.setEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)alienEffectSelected:(NSSegmentedControl*)sender
+{
+  using Effect = tdm::alien::DevAlien::Effect;
+  const NSInteger seg = sender.selectedSegment;
+  _alien.setEffect(seg == 1 ? Effect::Laser : seg == 2 ? Effect::Warp : Effect::Frequency);
+}
+
+- (void)alienDirSelected:(NSSegmentedControl*)sender
+{
+  _alien.setLaserDir((int)sender.selectedSegment); // 0 Down, 1 Up, 2 Cycle
+}
+
+- (void)alienWarpModeSelected:(NSSegmentedControl*)sender
+{
+  _alien.setWarpMode((int)sender.selectedSegment); // 0 FreqWarp, 1 PitchWarp
+}
+
+- (void)alienTrigger:(NSButton*)sender
+{
+  (void)sender;
+  _alien.triggerLaser();
 }
 
 - (void)refreshTuner
@@ -2120,6 +2369,199 @@ bool probeDoubleClickReset(std::string& detail)
   return YES;
 }
 
+- (BOOL)runAlienProbe:(std::string*)detail
+{
+  auto fail = [&](const char* msg) {
+    *detail = std::string(" [alien: ") + msg + "]";
+    return NO;
+  };
+  using Effect = tdm::alien::DevAlien::Effect;
+  // Defaults: checkbox off, Frequency, lab starting points, seam installed.
+  if (_alienCheck.state != NSControlStateValueOff)
+    return fail("checkbox not off");
+  if (_alien.isEnabled() || _alien.effect() != Effect::Frequency || _alien.mix01() != 1.0f)
+    return fail("router defaults wrong");
+  if (_alien.shiftHz() != 150.0f || _alien.laserDir() != 0 || _alien.sweepMs() != 120.0f
+      || _alien.depthMs() != 12.0f)
+    return fail("laser/shift defaults wrong");
+  if (_alien.warpMode() != 0 || _alien.warpTimeMs() != 220.0f || _alien.warpFb() != 0.5f
+      || _alien.warpShiftHz() != 100.0f || _alien.warpSt() != 3.0f)
+    return fail("warp defaults wrong");
+  if (_alienSeg.selectedSegment != 0 || _alienDirSeg.selectedSegment != 0
+      || _alienWarpSeg.selectedSegment != 0)
+    return fail("segments not on Frequency/Down/Freq");
+  if (_engine->rig().alienPostIr() == nullptr)
+    return fail("seam not installed");
+  // Drive every slider through the real action; adoption + label.
+  _sliders[@(kTagAlienMix)].doubleValue = 65.0;
+  [self paramChanged:_sliders[@(kTagAlienMix)]];
+  if (std::fabs(_alien.mix01() - 0.65f) > 1e-6f)
+    return fail("mix did not reach router");
+  [self refreshValueLabels:_engine->rig().params()];
+  if (![_valueLabels[@(kTagAlienMix)].stringValue isEqualToString:@"65%"])
+    return fail("mix label wrong");
+  _sliders[@(kTagAlienMix)].doubleValue = 100.0;
+  [self paramChanged:_sliders[@(kTagAlienMix)]];
+  _sliders[@(kTagAlienShiftHz)].doubleValue = -75.0;
+  [self paramChanged:_sliders[@(kTagAlienShiftHz)]];
+  if (_alien.shiftHz() != -75.0f)
+    return fail("shift did not reach router");
+  _sliders[@(kTagAlienSweepMs)].doubleValue = 250.0;
+  [self paramChanged:_sliders[@(kTagAlienSweepMs)]];
+  if (_alien.sweepMs() != 250.0f)
+    return fail("sweep did not reach router");
+  _sliders[@(kTagAlienDepthMs)].doubleValue = 20.0;
+  [self paramChanged:_sliders[@(kTagAlienDepthMs)]];
+  if (_alien.depthMs() != 20.0f)
+    return fail("depth did not reach router");
+  _sliders[@(kTagAlienWarpTime)].doubleValue = 300.0;
+  [self paramChanged:_sliders[@(kTagAlienWarpTime)]];
+  if (_alien.warpTimeMs() != 300.0f)
+    return fail("warp time did not reach router");
+  _sliders[@(kTagAlienWarpHz)].doubleValue = -50.0;
+  [self paramChanged:_sliders[@(kTagAlienWarpHz)]];
+  if (_alien.warpShiftHz() != -50.0f)
+    return fail("warp hz did not reach router");
+  _sliders[@(kTagAlienWarpSt)].doubleValue = -4.0;
+  [self paramChanged:_sliders[@(kTagAlienWarpSt)]];
+  if (_alien.warpSt() != -4.0f)
+    return fail("warp st did not reach router");
+  _sliders[@(kTagAlienWarpFb)].doubleValue = 0.7;
+  [self paramChanged:_sliders[@(kTagAlienWarpFb)]];
+  if (std::fabs(_alien.warpFb() - 0.7f) > 1e-6f)
+    return fail("warp fb did not reach router");
+  // Restore lab starting points before rendering.
+  _sliders[@(kTagAlienShiftHz)].doubleValue = 150.0;
+  [self paramChanged:_sliders[@(kTagAlienShiftHz)]];
+  _sliders[@(kTagAlienSweepMs)].doubleValue = 120.0;
+  [self paramChanged:_sliders[@(kTagAlienSweepMs)]];
+  _sliders[@(kTagAlienDepthMs)].doubleValue = 12.0;
+  [self paramChanged:_sliders[@(kTagAlienDepthMs)]];
+  _sliders[@(kTagAlienWarpTime)].doubleValue = 220.0;
+  [self paramChanged:_sliders[@(kTagAlienWarpTime)]];
+  _sliders[@(kTagAlienWarpHz)].doubleValue = 100.0;
+  [self paramChanged:_sliders[@(kTagAlienWarpHz)]];
+  _sliders[@(kTagAlienWarpSt)].doubleValue = 3.0;
+  [self paramChanged:_sliders[@(kTagAlienWarpSt)]];
+  _sliders[@(kTagAlienWarpFb)].doubleValue = 0.5;
+  [self paramChanged:_sliders[@(kTagAlienWarpFb)]];
+  // Selectors reach the router (effect + both sub-selectors).
+  if ([_alienSeg segmentCount] != 3 || [_alienDirSeg segmentCount] != 3
+      || [_alienWarpSeg segmentCount] != 2)
+    return fail("selector segment counts wrong");
+  for (NSInteger seg = 0; seg < 3; ++seg)
+  {
+    _alienSeg.selectedSegment = seg;
+    [self alienEffectSelected:_alienSeg];
+    const Effect want = seg == 1 ? Effect::Laser : seg == 2 ? Effect::Warp : Effect::Frequency;
+    if (_alien.effect() != want)
+      return fail("effect did not reach router");
+  }
+  for (NSInteger seg = 0; seg < 3; ++seg)
+  {
+    _alienDirSeg.selectedSegment = seg;
+    [self alienDirSelected:_alienDirSeg];
+    if (_alien.laserDir() != (int)seg)
+      return fail("laser dir did not reach router");
+  }
+  for (NSInteger seg = 0; seg < 2; ++seg)
+  {
+    _alienWarpSeg.selectedSegment = seg;
+    [self alienWarpModeSelected:_alienWarpSeg];
+    if (_alien.warpMode() != (int)seg)
+      return fail("warp mode did not reach router");
+  }
+  _alienSeg.selectedSegment = 0;
+  [self alienEffectSelected:_alienSeg];
+  _alienDirSeg.selectedSegment = 0;
+  [self alienDirSelected:_alienDirSeg];
+  _alienWarpSeg.selectedSegment = 0;
+  [self alienWarpModeSelected:_alienWarpSeg];
+  [self alienTrigger:nil]; // exercise the trigger path (Down chirp on enable)
+  // Transparency: installed-but-off renders bit-identical to no seam.
+  _engine->rig().reset(48000.0, 512);
+  const int n = 512 * 16; // block-aligned: no ragged tail reads
+  std::vector<float> in(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i)
+    in[static_cast<size_t>(i)] = 0.5f * std::sin(2.0 * 3.14159265358979 * 110.0 * i / 48000.0);
+  std::vector<float> off(static_cast<size_t>(n), 0.0f), bare(static_cast<size_t>(n), 0.0f);
+  _alienCheck.state = NSControlStateValueOff;
+  [self alienToggled:_alienCheck];
+  for (int b = 0; b < 16; ++b)
+  {
+    const float* bi[1] = {in.data() + b * 512};
+    float* bo[1] = {off.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().setAlienPostIr(nullptr);
+  _engine->rig().reset(48000.0, 512);
+  for (int b = 0; b < 16; ++b)
+  {
+    const float* bi[1] = {in.data() + b * 512};
+    float* bo[1] = {bare.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  _engine->rig().setAlienPostIr(&_alien);
+  if (off != bare)
+    return fail("installed-but-off changed rig output");
+  // Enabled effects actually render and rig params stay.
+  const int na = 512 * 96;
+  std::vector<float> atk(static_cast<size_t>(na), 0.0f);
+  for (int p = 0; p < 2; ++p)
+  {
+    const int at = 24000 + p * 24000;
+    for (int i = 0; i < 4800 && at + i < na; ++i)
+      atk[static_cast<size_t>(at + i)] +=
+          0.8f * std::sin(2.0 * 3.14159265358979 * 100.0 * i / 48000.0) * std::exp(-i / 960.0f);
+  }
+  const tdm::RigParams before = _engine->rig().params();
+  _engine->rig().reset(48000.0, 512);
+  _alienCheck.state = NSControlStateValueOff;
+  [self alienToggled:_alienCheck];
+  std::vector<float> atkDry(static_cast<size_t>(na), 0.0f);
+  for (int b = 0; b < 96; ++b)
+  {
+    const float* bi[1] = {atk.data() + b * 512};
+    float* bo[1] = {atkDry.data() + b * 512};
+    _engine->rig().processBlock(bi, 1, bo, 1, 512);
+  }
+  for (NSInteger seg = 0; seg < 3; ++seg)
+  {
+    _alienSeg.selectedSegment = seg;
+    [self alienEffectSelected:_alienSeg];
+    _alienCheck.state = NSControlStateValueOn;
+    [self alienToggled:_alienCheck];
+    std::vector<float> wet(static_cast<size_t>(na), 0.0f);
+    for (int b = 0; b < 96; ++b)
+    {
+      const float* bi[1] = {atk.data() + b * 512};
+      float* bo[1] = {wet.data() + b * 512};
+      _engine->rig().processBlock(bi, 1, bo, 1, 512);
+      if (seg == 1 && b == 0)
+        [self alienTrigger:nil]; // Down chirp after enable settles, so it sounds
+    }
+    if (wet == atkDry)
+      return fail("effect rendered dry");
+    bool finite = true;
+    for (float v : wet)
+      finite = finite && std::isfinite(v);
+    if (!finite)
+      return fail("effect non-finite");
+  }
+  const tdm::RigParams after = _engine->rig().params();
+  if (before.gateEnabled != after.gateEnabled || before.tight != after.tight
+      || before.driveEnabled != after.driveEnabled || before.inputTrimDb != after.inputTrimDb)
+    return fail("effects touched rig params");
+  // Back to defaults for a clean handoff.
+  _alienCheck.state = NSControlStateValueOff;
+  [self alienToggled:_alienCheck];
+  _alienSeg.selectedSegment = 0;
+  [self alienEffectSelected:_alienSeg];
+  if (![self checkDocGeometry:detail])
+    return NO;
+  return YES;
+}
+
 - (void)chooseNam:(id)sender
 {
   (void)sender;
@@ -2194,6 +2636,8 @@ bool probeTransposeUiFull(std::string& detail)
       ok = [controller runTunerProbe:&detail];
     if (ok == YES)
       ok = [controller runSlamProbe:&detail];
+    if (ok == YES)
+      ok = [controller runAlienProbe:&detail];
     delete engine; // stage (controller ivar) still alive: correct order
   }
   return ok == YES;

@@ -1867,3 +1867,103 @@ section, what it sounds like) and close the WSOLA line.
   hi-gain content at deep shifts (images at 2*r*nyquist...)? Measure
   on real DI if ears pass.
 
+---
+
+## Date
+
+2026-10-08
+
+### Module
+
+Alien FX Lab (`dsp/lab/Alien/`; DEV-only post-IR tap in `TechDeathRig`)
+
+### Hypothesis
+
+Three deliberately artificial transforms — true frequency shifting
+(inharmonic sidebands), Doppler delay sweeps (laser chirps), and a delay
+loop with per-repeat spectral transform (warp) — give tech-death guitar
+an alien-machinery voice that transparent transpose research rejected as
+artifacts. The artifacts ARE the effect here.
+
+### Implementation
+
+`AlienShift.h` — genuine SSB frequency shifter: 1023-tap Blackman
+Hilbert (512 MACs/sample), I*cos+Q*sin (sign pinned by Goertzel for
+this Hilbert convention, not assumed). Latency 511 samples. Range
++-2000 Hz; UI +-600 Hz.
+
+`AlienLaser.h` — single wrap-free fractional-delay line, base 4 ms +
+0..80 ms excursion; triggered Down/Up chirps (fast-exp out 35% +
+cosine return), Cycle triangle, damped+resonant+tanh loop (fb <= 0.7),
+4 ms raised-cosine return glide + live period tracking. Manual trigger
++ cycle; NO auto onset detection (unreliable on guitar, deferred).
+
+`AlienDoppler.h` — dual-tap masked-wrap variable-delay pitch core for
+the warp loop (NOT the rejected stash design; no pitch-sync stagger).
+
+`AlienWarp.h` — mono delay (40..1500 ms; UI 40..600) with in-loop
+transform: FreqWarp (fixed-Hz shift per repeat) or PitchWarp (semitone
+shift per repeat via AlienDoppler). Loop extras: 4-5 kHz damp LP,
+60 Hz HP, unity-slope saturator, fb cap 0.9.
+
+`AlienRing.h` — minimal DSB ring mod (comparison only, not in the UI).
+
+`DevAlien.h` — DEV router at the post-IR seam (after SLAM post-IR,
+pre-ToneShape): one effect at a time, 64-sample dip through dry +
+5 ms rise on effect/enable changes, incoming effect clear()ed then
+PRE-ROLLED with dry history (1 s ring) so no 0->signal edge re-emerges
+a latency later. All setters lock-free atomics; cores smooth.
+
+`AlienInsert.h` + `setAlienPostIr` rig seam (null by default; SLAM-seam
+pattern). Production DSP untouched.
+
+### Audition setup
+
+Offline only so far: `tdm_alien_study` renders through the real stage
+classes (5150II crunch NAM + test cab IR) with SEEDED SYNTHETIC DI
+(chugs/stabs/lead/dissonant hold). No recorded clean DI in repo.
+DEV app section ALIEN FX LAB (Effect/Mix/Shift/Dir/Sweep/Depth/
+Trigger/Warp controls) built, probe-green, NOT yet played on hardware.
+
+### Expected behavior
+
+Shift: +150 Hz on 440 -> 590 Hz single sideband; midband ~90 dB
+rejection, 82 Hz ~32 dB, 62 Hz ~22 dB, 41 Hz ~13 dB (short-Hilbert LF
+ghost documented). Laser: down 345 / up 530 Hz endpoints from 440
+(120 ms/12 ms probe). Warp Freq +100: repeats +100 Hz each at
+k*(time+10.6 ms); Pitch +3 st: ascending minors at k*(time+35 ms).
+All: finite, bounded, bypass-transparent, click-free switching.
+
+### Listening result
+
+NOT YET AUDITIONED. Offline numbers above prove the transforms are
+correct, not that they are musical. Hardware order: Frequency +150
+industrial -> Laser down zap -> Warp Freq mild -> extremes.
+
+### Problems
+
+- Warp time > 250 ms stretches repeat spacing (+10.6/+35 ms per pass
+  from in-loop latency): musical smear or confusion? Ears decide.
+- Doppler +-12 st sags ~1 st + chorus-y overlap (no pitch-sync): fine
+  for alien smear, wrong for tight intervals.
+- Shifter LF ghost below ~60 Hz: detuned charm or mud? Needs low-B.
+- Pre-roll burst on switch-to-warp (~5 ms @600 ms, one-time): DEV OK,
+  document before any production talk.
+- Synthetic DI proves transforms only; real-guitar playability unproven.
+
+### Next step
+
+Hardware audition via DEV app; then decide per effect: keep / revoice /
+park. Pre-NAM placement (intermod through the amp) still unexplored.
+
+### Transferable learning
+
+- clear()-at-dip-bottom is NOT click-free by itself for delay-memory
+  effects: the 0->signal edge returns one latency later (measured
+  +511/+time+511). Pre-roll with dry history is the general fix.
+- Sign conventions in SSB mixers must be Goertzel-pinned per Hilbert
+  implementation; textbook I*cos-Q*sin was backwards here.
+- Masked-wrap Doppler without pitch-sync is a fine creative smear
+  core even though it failed transparent transpose: same DSP,
+  opposite quality criterion.
+

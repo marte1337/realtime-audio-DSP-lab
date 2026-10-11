@@ -65,6 +65,7 @@
 #include "dsp/Pitch/GuitarTranspose.h"
 #include "dsp/RigParams.h"
 #include "dsp/Tuner/Tuner.h"
+#include "dsp/AlienInsert.h"
 #include "dsp/SlamInsert.h"
 #include "dsp/TransposeInsert.h"
 #include "dsp/Gate/TechDeathGate.h"
@@ -262,6 +263,11 @@ public:
   SlamInsert* slamPostNam() const { return slamPostNam_; }
   SlamInsert* slamPostIr() const { return slamPostIr_; }
 
+  // DEV Alien FX seam (OFF-RT ONLY, same contract as above). Mono insert
+  // post-IR (after the SLAM post-IR tap), pre-ToneShape. Null by default.
+  void setAlienPostIr(AlienInsert* insert) { alienPostIr_ = insert; }
+  AlienInsert* alienPostIr() const { return alienPostIr_; }
+
   // RT-safe after reset(). inputs[nIn][nFrames] -> outputs[nOut][nOut].
   // Changed parameters are applied once here, at the block boundary.
   void processBlock(const float* const* inputs, int numInputChannels, float* const* outputs,
@@ -299,6 +305,7 @@ private:
   SlamInsert* slamPre_ = nullptr; // DEV-only SLAM taps, null in production
   SlamInsert* slamPostNam_ = nullptr;
   SlamInsert* slamPostIr_ = nullptr;
+  AlienInsert* alienPostIr_ = nullptr; // DEV-only Alien tap, null in production
   TightDrive drive_;
   NamStage nam_;
   CabIrStage ir_;
