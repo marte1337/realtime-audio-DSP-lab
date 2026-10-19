@@ -6,6 +6,8 @@
 #include "tests/Assert.h"
 
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -98,6 +100,21 @@ void runTap(tdm::SpecInsert& t, std::vector<float>& io)
     float* p = io.data() + off;
     t.process(p, p, m);
   }
+}
+
+uint64_t fnvBits(const std::vector<float>& x)
+{
+  uint64_t h = 1469598103934665603ULL;
+  for (size_t i = 0; i < x.size(); ++i)
+  {
+    uint32_t u;
+    std::memcpy(&u, &x[i], 4);
+    h ^= u;
+    h *= 1099511628211ULL;
+    h ^= (u >> 16);
+    h *= 1099511628211ULL;
+  }
+  return h;
 }
 
 void rigRun(tdm::TechDeathRig& rig, const std::vector<float>& in, std::vector<float>& out)
@@ -527,5 +544,324 @@ void runSpecFxTests()
                   && before.driveEnabled == after.driveEnabled
                   && before.inputTrimDb == after.inputTrimDb,
               "spec rig params untouched");
+  }
+
+  // 25. GOLDEN: milestone voice renders bit-identical (accepted Whammy/
+  // Ring/others preserved; idle gestures are exact identity). Goldens
+  // rendered from 6113f3b with -O2; a libm/toolchain change would show
+  // here while the behavioral bands above still pass (environmental).
+  {
+    const uint64_t kGolden[4] = {0x108fe8f852cac451ULL, 0x8f3a1e575856b93eULL,
+                                 0xce1714274f397402ULL, 0x4e39ceb333dab03dULL};
+    auto sig = sine(0.4f, 220.0f, static_cast<int>(2 * kSr));
+    const int n = static_cast<int>(sig.size());
+    for (int v = 0; v < 4; ++v)
+    {
+      SpecLaser e;
+      e.reset(kSr);
+      e.setVoice(static_cast<Voice>(v));
+      std::vector<float> y(static_cast<size_t>(n));
+      for (int i = 0; i < n; ++i)
+      {
+        e.setExpression(i < n / 2 ? static_cast<float>(i) / static_cast<float>(n / 2) : 1.0f);
+        y[i] = e.process(sig[(size_t)i]);
+      }
+      TDM_CHECK(fnvBits(y) == kGolden[v], "spec golden voice preserved");
+    }
+  }
+  // 26. GOLDEN: legacy toe-press transient bit-identical at defaults
+  // (0 ms gesture = snap; the 5 ms smoother does all slewing, as before).
+  {
+    auto sig = sine(0.4f, 220.0f, static_cast<int>(2 * kSr));
+    const int n = static_cast<int>(sig.size());
+    SpecLaser e;
+    e.reset(kSr);
+    std::vector<float> y(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i)
+    {
+      e.setExpression(0.0f);
+      if (i == n / 2)
+        e.setTrigger(true);
+      y[i] = e.process(sig[(size_t)i]);
+    }
+    TDM_CHECK(fnvBits(y) == 0xea5873b3e8c0d5ffULL, "spec golden toe-press preserved");
+  }
+  // 27. Toe rise/return timing: independent linear ramps, exact settle.
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setToeRiseMs(500.0f);
+    e.setToeReturnMs(200.0f);
+    e.setTrigger(true);
+    int riseAt = -1;
+    for (int i = 0; i < static_cast<int>(kSr); ++i)
+    {
+      e.process(0.1f);
+      if (e.toeGesture() == 1.0f)
+      {
+        riseAt = i;
+        break;
+      }
+    }
+    TDM_CHECK(riseAt > 0 && std::abs(riseAt - 24000) <= 64, "spec toe rise 500ms");
+    e.setTrigger(false);
+    int retAt = -1;
+    for (int i = 0; i < static_cast<int>(kSr); ++i)
+    {
+      e.process(0.1f);
+      if (e.toeGesture() == 0.0f)
+      {
+        retAt = i;
+        break;
+      }
+    }
+    TDM_CHECK(retAt > 0 && std::abs(retAt - 9600) <= 64, "spec toe return 200ms");
+  }
+  // 28. Default toe is instant (legacy stab): gesture snaps in 1 sample,
+  // position reaches full within 20 ms through the 5 ms smoother.
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.process(0.1f);
+    e.setTrigger(true);
+    e.process(0.1f);
+    TDM_CHECK(e.toeGesture() == 1.0f, "spec default toe snaps");
+    int fullAt = -1;
+    for (int i = 0; i < 4800; ++i)
+    {
+      e.process(0.1f);
+      if (e.expressionPos() > 0.95f)
+      {
+        fullAt = i;
+        break;
+      }
+    }
+    TDM_CHECK(fullAt > 0 && fullAt < 960, "spec default toe fast");
+  }
+  // 29. Dive accuracy: -12 target on 220 Hz lands in the sag band;
+  // depth 6 lands near the tritone; uniform on Ring voice too.
+  {
+    for (Voice v : {Voice::Whammy, Voice::Ring})
+    {
+      SpecLaser e;
+      e.reset(kSr);
+      e.setVoice(v);
+      e.setDiveDepthSt(12.0f);
+      e.setDiveTimeMs(50.0f);
+      e.setDive(true);
+      auto sig = sine(0.5f, 220.0f, static_cast<int>(2 * kSr));
+      auto y = renderEngine(e, sig);
+      const int n = static_cast<int>(y.size());
+      const double f = zcFreq(y, n / 2, n);
+      TDM_CHECK(f > 100.0 && f < 130.0, "spec dive -12 band"); // sag zone, see probe
+      TDM_CHECK(tdm_test::allFinite(y.data(), n), "spec dive finite");
+    }
+    SpecLaser e;
+    e.reset(kSr);
+    e.setDiveDepthSt(6.0f);
+    e.setDiveTimeMs(50.0f);
+    e.setDive(true);
+    auto sig = sine(0.5f, 220.0f, static_cast<int>(2 * kSr));
+    auto y = renderEngine(e, sig);
+    TDM_CHECK(zcFreq(y, (int)y.size() / 2, (int)y.size()) > 145.0
+                  && zcFreq(y, (int)y.size() / 2, (int)y.size()) < 165.0,
+              "spec dive -6 band");
+  }
+  // 30. Dive sweep + return continuous; release restores the live base.
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setExpression(0.5f);
+    e.setDiveTimeMs(300.0f);
+    e.setDiveReturnMs(200.0f);
+    auto sig = sine(0.4f, 220.0f, static_cast<int>(3 * kSr));
+    std::vector<float> y(sig.size());
+    const int n = static_cast<int>(sig.size());
+    for (int i = 0; i < n; ++i)
+    {
+      if (i == n / 3)
+        e.setDive(true);
+      if (i == 2 * n / 3)
+        e.setDive(false);
+      y[(size_t)i] = e.process(sig[(size_t)i]);
+    }
+    TDM_CHECK(maxStep(y) < 0.15f, "spec dive sweep continuous");
+    const double back = zcFreq(y, n - 24000, n);
+    TDM_CHECK(back > 295.0 && back < 325.0, "spec dive restores base"); // +6 st
+  }
+  // 31. Precedence: dive wins over toe while both held; releases reveal
+  // the live underneath, all continuous.
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setDiveTimeMs(50.0f);
+    e.setDiveReturnMs(50.0f);
+    auto sig = sine(0.4f, 220.0f, static_cast<int>(4 * kSr));
+    std::vector<float> y(sig.size());
+    const int n = static_cast<int>(sig.size());
+    const int q = n / 4;
+    e.setTrigger(true); // toe first (would be +12 alone)
+    for (int i = 0; i < n; ++i)
+    {
+      if (i == q)
+        e.setDive(true); // dive joins: takes over downward
+      if (i == 2 * q)
+        e.setDive(false); // dive releases: toe revealed
+      if (i == 3 * q)
+        e.setTrigger(false); // toe releases: base (heel) revealed
+      y[(size_t)i] = e.process(sig[(size_t)i]);
+    }
+    TDM_CHECK(maxStep(y) < 0.15f, "spec gesture handoffs continuous");
+    TDM_CHECK(zcFreq(y, q / 2, q) > 404.0, "spec toe alone toe-up");
+    const double dv = zcFreq(y, q + q / 4, 2 * q);
+    TDM_CHECK(dv > 100.0 && dv < 130.0, "spec dive wins while held");
+    TDM_CHECK(zcFreq(y, 2 * q + q / 4, 3 * q) > 404.0, "spec dive release reveals toe");
+    TDM_CHECK(tdm_test::allFinite(y.data(), n), "spec gesture handoffs finite");
+  }
+  // 32. Expression moves during a held slow toe: continuous, and the
+  // release lands on the NEW base (no stale value).
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setToeRiseMs(500.0f);
+    e.setToeReturnMs(500.0f);
+    auto sig = sine(0.4f, 220.0f, static_cast<int>(3 * kSr));
+    std::vector<float> y(sig.size());
+    const int n = static_cast<int>(sig.size());
+    for (int i = 0; i < n; ++i)
+    {
+      if (i == n / 6)
+        e.setTrigger(true);
+      if (i == n / 3)
+        e.setExpression(0.5f); // base moves under the held gesture
+      if (i == 2 * n / 3)
+        e.setTrigger(false);
+      y[(size_t)i] = e.process(sig[(size_t)i]);
+    }
+    TDM_CHECK(maxStep(y) < 0.15f, "spec base move under gesture continuous");
+    const double back = zcFreq(y, n - 24000, n);
+    TDM_CHECK(back > 295.0 && back < 325.0, "spec release lands on new base");
+  }
+  // 33. Source switch with toe held: fast glide to the live envelope,
+  // bounded, settles; switching back restores toe.
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setExpression(0.0f);
+    e.setTrigger(true);
+    std::vector<float> y;
+    y.reserve(96000);
+    for (int i = 0; i < 24000; ++i)
+      y.push_back(e.process(0.3f)); // toe up in manual
+    e.setControl(Control::Envelope);
+    for (int i = 0; i < 24000; ++i)
+      y.push_back(e.process(0.0f)); // silence: envelope rules now
+    TDM_CHECK(maxStep(y) < 0.3f, "spec source switch bounded");
+    TDM_CHECK(e.expressionPos() < 0.05f, "spec source switch settles to envelope");
+    e.setControl(Control::Manual); // toe still held underneath
+    for (int i = 0; i < 24000; ++i)
+      y.push_back(e.process(0.0f));
+    TDM_CHECK(e.expressionPos() > 0.95f, "spec switch back reveals toe");
+    TDM_CHECK(tdm_test::allFinite(y.data(), (int)y.size()), "spec source switch finite");
+  }
+  // 34. Rapid gesture slams stay finite and bounded.
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setToeRiseMs(100.0f);
+    e.setToeReturnMs(100.0f);
+    e.setDiveTimeMs(150.0f);
+    e.setDiveReturnMs(150.0f);
+    auto sig = sine(0.4f, 196.0f, static_cast<int>(2 * kSr));
+    std::vector<float> y(sig.size());
+    bool trig = false, dive = false;
+    for (size_t i = 0; i < sig.size(); ++i)
+    {
+      if (i % 100 == 0)
+      {
+        trig = !trig;
+        e.setTrigger(trig);
+      }
+      if (i % 150 == 0)
+      {
+        dive = !dive;
+        e.setDive(dive);
+      }
+      y[i] = e.process(sig[i]);
+    }
+    TDM_CHECK(tdm_test::allFinite(y.data(), (int)y.size()), "spec gesture slams finite");
+    TDM_CHECK(maxStep(y) < 0.3f, "spec gesture slams bounded");
+  }
+  // 35. Dive depth 0: press dives toward unison (harmless).
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setExpression(0.5f);
+    e.setDiveDepthSt(0.0f);
+    e.setDiveTimeMs(50.0f);
+    e.setDive(true);
+    auto sig = sine(0.5f, 220.0f, static_cast<int>(2 * kSr));
+    auto y = renderEngine(e, sig);
+    const double f = zcFreq(y, (int)y.size() / 2, (int)y.size());
+    TDM_CHECK(f > 215.0 && f < 225.0, "spec dive depth-0 unison");
+  }
+  // 36. Router: gesture defaults + adoption (slow toe audibly slews).
+  {
+    DevSpecFx d;
+    TDM_CHECK(!d.dive(), "spec router default dive off");
+    TDM_CHECK(d.toeRiseMs() == 0.0f && d.toeReturnMs() == 0.0f, "spec router default toe fast");
+    TDM_CHECK(d.diveDepthSt() == 12.0f, "spec router default depth");
+    TDM_CHECK(d.diveTimeMs() == 300.0f && d.diveReturnMs() == 200.0f,
+              "spec router default dive times");
+    // Slow toe through the tap: mid-press pitch sits between heel/toe.
+    DevSpecFx r;
+    r.setToeRiseMs(500.0f);
+    r.setTrigger(true);
+    r.setEnabled(true);
+    r.preTap().reset(kSr, 256);
+    r.postTap().reset(kSr, 256);
+    auto sig = sine(0.4f, 220.0f, static_cast<int>(2 * kSr));
+    std::vector<float> io = sig;
+    runTap(r.preTap(), io);
+    const double mid = zcFreq(io, 10000, 14000); // ~250 ms in: mid-sweep
+    TDM_CHECK(mid > 260.0 && mid < 400.0, "spec router toe rate adopts");
+    // Dive press through the tap reaches the sag band.
+    DevSpecFx v;
+    v.setDiveTimeMs(50.0f);
+    v.setDive(true);
+    v.setEnabled(true);
+    v.preTap().reset(kSr, 256);
+    v.postTap().reset(kSr, 256);
+    std::vector<float> io2 = sig;
+    runTap(v.preTap(), io2);
+    const double dv = zcFreq(io2, (int)io2.size() / 2, (int)io2.size());
+    TDM_CHECK(dv > 100.0 && dv < 130.0, "spec router dive adopts");
+  }
+  // 37. Disable mid-gesture: dry at the bottom; re-enable restores dive.
+  {
+    DevSpecFx d;
+    d.setDiveTimeMs(1000.0f); // slow: guaranteed mid-sweep at disable
+    d.setDive(true);
+    d.setEnabled(true);
+    d.preTap().reset(kSr, 256);
+    d.postTap().reset(kSr, 256);
+    auto tail = sine(0.4f, 440.0f, 12000);
+    auto dryRef = tail;
+    runTap(d.preTap(), tail); // diving (wet, mid-sweep)
+    d.setEnabled(false);
+    tail = dryRef;
+    runTap(d.preTap(), tail);
+    runTap(d.postTap(), tail);
+    TDM_CHECK(bitEqual(tail.data() + 256, dryRef.data() + 256, (int)tail.size() - 256),
+              "spec disable mid-gesture dry");
+    d.setEnabled(true); // dive still held underneath
+    tail = sine(0.4f, 220.0f, static_cast<int>(2 * kSr));
+    auto ref2 = tail;
+    runTap(d.preTap(), tail);
+    float dev = 0.0f;
+    for (size_t i = 0; i < tail.size(); ++i)
+      dev = std::max(dev, std::fabs(tail[i] - ref2[i]));
+    TDM_CHECK(dev > 0.01f, "spec re-enable restores gesture");
+    TDM_CHECK(tdm_test::allFinite(tail.data(), (int)tail.size()), "spec gesture enable finite");
   }
 }

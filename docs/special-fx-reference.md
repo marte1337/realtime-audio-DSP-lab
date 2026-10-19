@@ -163,7 +163,20 @@ milestone AFTER Laser hardware verdict. No code written yet — deliberate.
 - Synthetic signals prove MATH ONLY. Musical verdict needs hardware:
   Whammy pre sweep → Dual → Ring → Detune → Envelope → post A/B.
 
-## 8. FILES (uncommitted on research/special-fx-reference)
+## 8. PERFORMANCE GESTURES (research/special-fx-performance, uncommitted)
+
+Hardware accepted Whammy/Ring/Toe (preserved bit-exact, golden-pinned
+vs `6113f3b`). Added: Toe Rise/Return (0..1000 ms, default 0 = legacy
+stab exactly) and Divebomb (Dive button + Depth/Time/Return; dedicated
+V3 leg, monotonic 0 → −depth, voice crossfades toward it; both control
+modes). Precedence base < Toe < Dive via continuous functions of
+independently-tracked gestures. Depth capped at 12 st: probe showed
+−18/−24 smear (+2..+8 st, signal-dependent, mush below). Dive has no
+reference counterpart (our design). Gestures are bools + ms through the
+atomic architecture (MIDI-ready). Details: `docs/experiments.md`
+2026-10-11 entry.
+
+## 9. FILES (milestone 6113f3b + uncommitted gestures above)
 New: `dsp/SpecInsert.h`, `dsp/lab/SpecialFx/{SpecLaser,DevSpecFx}.h`,
 `dsp/lab/SpecialFx/SpecStudy.cpp`, `tests/TestSpecFx.cpp`,
 `docs/special-fx-reference.md`. Modified: `dsp/TechDeathRig.h/.cpp`

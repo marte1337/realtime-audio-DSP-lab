@@ -2041,3 +2041,77 @@ Laser verdict.
 - Expression-first architecture (one position → many maps, two sources
   + momentary force) is a reusable lab pattern for Glitch Chaos later.
 
+---
+
+## Date
+
+2026-10-11
+
+### Module
+
+Special FX performance gestures (`dsp/lab/SpecialFx/`; Toe Rise/Return,
+Divebomb)
+
+### Hypothesis
+
+Hardware ACCEPTED Whammy/Ring/Toe (keep bit-exact) but wants playable
+gestures: adjustable Toe slew (stab vs sweep shapes) and a genuine
+downward Divebomb. Both must layer onto the expression architecture
+without disturbing the accepted voices.
+
+### Implementation
+
+`SpecLaser`: Toe button now drives `toeGest` 0..1 through linear
+Rise/Return ramps (0 ms = snap = legacy-exact); expression =
+max(base, toe) in Manual. NEW Divebomb button drives `diveGest`
+through Dive Time/Return ramps; dedicated V3 doppler leg sweeps a
+monotonic 0 -> -depth trajectory while the voice crossfades toward it.
+Precedence base < Toe < Dive falls out of continuous functions of
+independently-tracked gestures (no stored restore values, no jumps).
+V1/V2 keep normal targets under dive (primed for release). Depth caps
+at 12 st: probe showed -18/-24 smear toward mush (+2..+8 st errors,
+signal-dependent; even -12 renders -10.5..-16 by f0). UI: Toe Rise/
+Return, Dive button + Depth/Time/Return; gestures are plain bools + ms
+(MIDI-ready, no AppKit coupling).
+
+### Audition setup
+
+Offline: goldens (4 voices + toe-press BIT-EXACT vs 6113f3b), 39 new
+checks, study renders `laser_dive_pre` / `laser_toestab_pre`. Hardware:
+pending (see report for gesture audition shapes).
+
+### Expected behavior
+
+Defaults = milestone sound exactly. Toe 0/0: legacy stab. Slow rise +
+fast return: ascending sweep, abrupt drop. Dive: press dives below the
+played pitch (approximate endpoint in the sag zone), release restores
+the live base. Both-held: dive wins; releasing reveals toe (slewed).
+
+### Listening result
+
+NOT YET AUDITIONED (gestures are new; voices were accepted before).
+
+### Problems
+
+- First dive attempt (retask V1 through zero) clicked: doppler
+  direction flips mirror taps mid-signal. Fixed architecturally with
+  the dedicated V3 leg (monotonic trajectory, engagement-masked flip).
+- -12 endpoint is approximate (sag zone); dives decelerate near the
+  bottom. Probably fine for divebombs (slack-string feel); ears decide.
+- Toe ignored in Envelope mode (reference semantics) may surprise;
+  kept deliberately, documented in UI behavior.
+
+### Next step
+
+Hardware gesture audition (stab/sweep/dive shapes, both-held,
+envelope+dive) → then Glitch milestone.
+
+### Transferable learning
+
+- Doppler legs must NEVER cross zero mid-signal: direction flips jump
+  taps. Unity engagement (wetMix fade) is the only masked crossing —
+  design trajectories (V3 dive) or fades around that rule.
+- Bit-exact preservation is achievable alongside new features via
+  exact-identity idle paths (branch on gest==0) + golden hashes from
+  the milestone tree. Proved here, reusable for Glitch later.
+

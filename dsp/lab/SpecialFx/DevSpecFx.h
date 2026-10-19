@@ -51,6 +51,12 @@ public:
   void setSensitivity(float v) { sensitivity_.store(clamp01(v), std::memory_order_relaxed); }
   void setMix(float v) { mix_.store(clamp01(v), std::memory_order_relaxed); }
   void setTrigger(bool t) { trigger_.store(t, std::memory_order_relaxed); }
+  void setToeRiseMs(float ms) { toeRiseMs_.store(ms, std::memory_order_relaxed); }
+  void setToeReturnMs(float ms) { toeReturnMs_.store(ms, std::memory_order_relaxed); }
+  void setDive(bool d) { dive_.store(d, std::memory_order_relaxed); }
+  void setDiveDepthSt(float st) { diveDepth_.store(st, std::memory_order_relaxed); }
+  void setDiveTimeMs(float ms) { diveTimeMs_.store(ms, std::memory_order_relaxed); }
+  void setDiveReturnMs(float ms) { diveReturnMs_.store(ms, std::memory_order_relaxed); }
   void setInsert(Insert i) { insert_.store(static_cast<int>(i), std::memory_order_relaxed); }
 
   bool isEnabled() const { return enabled_.load(std::memory_order_relaxed); }
@@ -64,6 +70,12 @@ public:
     return (insert_.load(std::memory_order_relaxed) == 1) ? Insert::Post : Insert::Pre;
   }
   bool trigger() const { return trigger_.load(std::memory_order_relaxed); }
+  bool dive() const { return dive_.load(std::memory_order_relaxed); }
+  float toeRiseMs() const { return toeRiseMs_.load(std::memory_order_relaxed); }
+  float toeReturnMs() const { return toeReturnMs_.load(std::memory_order_relaxed); }
+  float diveDepthSt() const { return diveDepth_.load(std::memory_order_relaxed); }
+  float diveTimeMs() const { return diveTimeMs_.load(std::memory_order_relaxed); }
+  float diveReturnMs() const { return diveReturnMs_.load(std::memory_order_relaxed); }
   float mix01() const { return mix_.load(std::memory_order_relaxed); }
   float expression() const { return expression_.load(std::memory_order_relaxed); }
   float speed() const { return speed_.load(std::memory_order_relaxed); }
@@ -143,6 +155,12 @@ private:
     e.setSpeed(speed_.load(std::memory_order_relaxed));
     e.setSensitivity(sensitivity_.load(std::memory_order_relaxed));
     e.setTrigger(trigger_.load(std::memory_order_relaxed));
+    e.setToeRiseMs(toeRiseMs_.load(std::memory_order_relaxed));
+    e.setToeReturnMs(toeReturnMs_.load(std::memory_order_relaxed));
+    e.setDive(dive_.load(std::memory_order_relaxed));
+    e.setDiveDepthSt(diveDepth_.load(std::memory_order_relaxed));
+    e.setDiveTimeMs(diveTimeMs_.load(std::memory_order_relaxed));
+    e.setDiveReturnMs(diveReturnMs_.load(std::memory_order_relaxed));
   }
 
   void runTap(Tap& tap, const float* input, float* output, int numFrames)
@@ -288,6 +306,12 @@ private:
   std::atomic<float> sensitivity_{SpecLaser::kDefaultSensitivity};
   std::atomic<float> mix_{1.0f};
   std::atomic<bool> trigger_{false};
+  std::atomic<float> toeRiseMs_{SpecLaser::kDefaultToeRiseMs};
+  std::atomic<float> toeReturnMs_{SpecLaser::kDefaultToeReturnMs};
+  std::atomic<bool> dive_{false};
+  std::atomic<float> diveDepth_{SpecLaser::kDefaultDiveDepthSt};
+  std::atomic<float> diveTimeMs_{SpecLaser::kDefaultDiveTimeMs};
+  std::atomic<float> diveReturnMs_{SpecLaser::kDefaultDiveReturnMs};
   std::atomic<int> insert_{0};
 
   float dipStep_ = 1.0f / 64.0f;

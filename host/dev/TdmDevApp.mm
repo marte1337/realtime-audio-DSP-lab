@@ -145,7 +145,13 @@ enum SliderTag
   kTagSpecExpr,
   kTagSpecSpeed,
   kTagSpecSens,
-  kTagSpecMix
+  kTagSpecMix,
+  // Performance gestures (Toe Rise/Return, Dive Depth/Time/Return).
+  kTagSpecToeRise,
+  kTagSpecToeRet,
+  kTagSpecDiveDepth,
+  kTagSpecDiveTime,
+  kTagSpecDiveRet
 };
 
 // GT2 advanced rows use their own tag band (field index + base) with a
@@ -220,6 +226,16 @@ double resetValueForTag(SliderTag tag)
     return 60.0;
   case kTagSpecMix:
     return 100.0;
+  case kTagSpecToeRise:
+    return 0.0; // 0 ms = instant = legacy fast stab (exact)
+  case kTagSpecToeRet:
+    return 0.0;
+  case kTagSpecDiveDepth:
+    return 12.0;
+  case kTagSpecDiveTime:
+    return 300.0;
+  case kTagSpecDiveRet:
+    return 200.0;
   }
   return 0.0;
 }
@@ -274,6 +290,11 @@ int smokeTest()
     check((float)resetValueForTag(kTagSpecSpeed) == 60.0f, "reset: spec speed -> 60");
     check((float)resetValueForTag(kTagSpecSens) == 60.0f, "reset: spec sens -> 60");
     check((float)resetValueForTag(kTagSpecMix) == 100.0f, "reset: spec mix -> 100%");
+    check((float)resetValueForTag(kTagSpecToeRise) == 0.0f, "reset: spec toe rise -> 0");
+    check((float)resetValueForTag(kTagSpecToeRet) == 0.0f, "reset: spec toe ret -> 0");
+    check((float)resetValueForTag(kTagSpecDiveDepth) == 12.0f, "reset: spec dive depth -> 12");
+    check((float)resetValueForTag(kTagSpecDiveTime) == 300.0f, "reset: spec dive time -> 300");
+    check((float)resetValueForTag(kTagSpecDiveRet) == 200.0f, "reset: spec dive ret -> 200");
     // Double-click behavior on the real control (defined after the control
     // classes below): a synthesized double-click parks the reset value and
     // fires the normal action exactly once.
@@ -736,6 +757,12 @@ bool probeDoubleClickReset(std::string& detail)
     _spec.setSensitivity(0.6f);
     _spec.setMix(1.0f);
     _spec.setTrigger(false);
+    _spec.setToeRiseMs(0.0f);
+    _spec.setToeReturnMs(0.0f);
+    _spec.setDive(false);
+    _spec.setDiveDepthSt(12.0f);
+    _spec.setDiveTimeMs(300.0f);
+    _spec.setDiveReturnMs(200.0f);
     _spec.setInsert(tdm::specfx::DevSpecFx::Insert::Pre);
     _lastStepper = 0.0;
     _advShown = 0.0;
@@ -1468,6 +1495,24 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 30;
+  [self addSliderRow:@"Toe Rise" // 0 = instant legacy stab; up to 1 s sweep
+                 tag:kTagSpecToeRise
+                 min:0
+                 max:1000
+                init:0
+               reset:0
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Toe Return"
+                 tag:kTagSpecToeRet
+                 min:0
+                 max:1000
+                init:0
+               reset:0
+                   y:y
+               width:kWidth];
+  y += 30;
   NSTextField* specToeLabel = [self makeLabel:@"Trigger" frame:NSMakeRect(20, y, 110, 22) small:NO];
   [_docView addSubview:specToeLabel];
   TdmMomentaryButton* specToe = [[TdmMomentaryButton alloc] initWithFrame:NSMakeRect(135, y - 2, 120, 26)];
@@ -1477,6 +1522,40 @@ bool probeDoubleClickReset(std::string& detail)
   specToe.downAction = @selector(specToeDown:);
   specToe.upAction = @selector(specToeUp:);
   [_docView addSubview:specToe];
+  TdmMomentaryButton* specDive = [[TdmMomentaryButton alloc] initWithFrame:NSMakeRect(265, y - 2, 120, 26)];
+  specDive.title = @"Dive";
+  specDive.bezelStyle = NSBezelStyleRounded;
+  specDive.target = self;
+  specDive.downAction = @selector(specDiveDown:);
+  specDive.upAction = @selector(specDiveUp:);
+  [_docView addSubview:specDive];
+  y += 30;
+  [self addSliderRow:@"Dive Depth"
+                 tag:kTagSpecDiveDepth
+                 min:0
+                 max:tdm::specfx::SpecLaser::kMaxDiveDepthSt
+                init:12
+               reset:12
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Dive Time"
+                 tag:kTagSpecDiveTime
+                 min:0
+                 max:1000
+                init:300
+               reset:300
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Dive Return"
+                 tag:kTagSpecDiveRet
+                 min:0
+                 max:1000
+                init:200
+               reset:200
+                   y:y
+               width:kWidth];
   y += 30;
   NSTextField* specInsertLabel = [self makeLabel:@"Insert" frame:NSMakeRect(20, y, 110, 22) small:NO];
   [_docView addSubview:specInsertLabel];
@@ -1698,6 +1777,16 @@ bool probeDoubleClickReset(std::string& detail)
       [NSString stringWithFormat:@"%.0f%%", _spec.sensitivity() * 100.0];
   _valueLabels[@(kTagSpecMix)].stringValue =
       [NSString stringWithFormat:@"%.0f%%", _spec.mix01() * 100.0];
+  _valueLabels[@(kTagSpecToeRise)].stringValue =
+      [NSString stringWithFormat:@"%.0f ms", _spec.toeRiseMs()];
+  _valueLabels[@(kTagSpecToeRet)].stringValue =
+      [NSString stringWithFormat:@"%.0f ms", _spec.toeReturnMs()];
+  _valueLabels[@(kTagSpecDiveDepth)].stringValue =
+      [NSString stringWithFormat:@"-%.1f st", _spec.diveDepthSt()];
+  _valueLabels[@(kTagSpecDiveTime)].stringValue =
+      [NSString stringWithFormat:@"%.0f ms", _spec.diveTimeMs()];
+  _valueLabels[@(kTagSpecDiveRet)].stringValue =
+      [NSString stringWithFormat:@"%.0f ms", _spec.diveReturnMs()];
 }
 
 // GT2 advanced value labels from stored (pending) config.
@@ -1854,6 +1943,21 @@ bool probeDoubleClickReset(std::string& detail)
     break;
   case kTagSpecMix:
     _spec.setMix((float)(v / 100.0));
+    break;
+  case kTagSpecToeRise:
+    _spec.setToeRiseMs((float)v); // gesture rates (ms) + dive depth (st)
+    break;
+  case kTagSpecToeRet:
+    _spec.setToeReturnMs((float)v);
+    break;
+  case kTagSpecDiveDepth:
+    _spec.setDiveDepthSt((float)v);
+    break;
+  case kTagSpecDiveTime:
+    _spec.setDiveTimeMs((float)v);
+    break;
+  case kTagSpecDiveRet:
+    _spec.setDiveReturnMs((float)v);
     break;
   default:
     break;
@@ -2098,6 +2202,18 @@ bool probeDoubleClickReset(std::string& detail)
 {
   (void)sender;
   _spec.setTrigger(false);
+}
+
+- (void)specDiveDown:(id)sender
+{
+  (void)sender;
+  _spec.setDive(true);
+}
+
+- (void)specDiveUp:(id)sender
+{
+  (void)sender;
+  _spec.setDive(false);
 }
 
 - (void)refreshTuner
@@ -2790,6 +2906,10 @@ bool probeDoubleClickReset(std::string& detail)
   if (_spec.expression() != 0.0f || _spec.speed() != 0.6f || _spec.sensitivity() != 0.6f
       || _spec.mix01() != 1.0f || _spec.trigger() || _spec.insert() != Insert::Pre)
     return fail("router param defaults wrong");
+  if (_spec.dive() || _spec.toeRiseMs() != 0.0f || _spec.toeReturnMs() != 0.0f
+      || _spec.diveDepthSt() != 12.0f || _spec.diveTimeMs() != 300.0f
+      || _spec.diveReturnMs() != 200.0f)
+    return fail("router gesture defaults wrong");
   if (_specVoiceSeg.selectedSegment != 0 || _specControlSeg.selectedSegment != 0
       || _specInsertSeg.selectedSegment != 0)
     return fail("segments not on Whammy/Manual/Pre");
@@ -2823,6 +2943,39 @@ bool probeDoubleClickReset(std::string& detail)
   [self paramChanged:_sliders[@(kTagSpecSens)]];
   _sliders[@(kTagSpecMix)].doubleValue = 100.0;
   [self paramChanged:_sliders[@(kTagSpecMix)]];
+  _sliders[@(kTagSpecToeRise)].doubleValue = 250.0;
+  [self paramChanged:_sliders[@(kTagSpecToeRise)]];
+  if (_spec.toeRiseMs() != 250.0f)
+    return fail("toe rise did not reach router");
+  _sliders[@(kTagSpecToeRet)].doubleValue = 120.0;
+  [self paramChanged:_sliders[@(kTagSpecToeRet)]];
+  if (_spec.toeReturnMs() != 120.0f)
+    return fail("toe return did not reach router");
+  _sliders[@(kTagSpecDiveDepth)].doubleValue = 6.0;
+  [self paramChanged:_sliders[@(kTagSpecDiveDepth)]];
+  if (_spec.diveDepthSt() != 6.0f)
+    return fail("dive depth did not reach router");
+  [self refreshValueLabels:_engine->rig().params()];
+  if (![_valueLabels[@(kTagSpecDiveDepth)].stringValue isEqualToString:@"-6.0 st"])
+    return fail("dive depth label wrong");
+  _sliders[@(kTagSpecDiveTime)].doubleValue = 400.0;
+  [self paramChanged:_sliders[@(kTagSpecDiveTime)]];
+  if (_spec.diveTimeMs() != 400.0f)
+    return fail("dive time did not reach router");
+  _sliders[@(kTagSpecDiveRet)].doubleValue = 150.0;
+  [self paramChanged:_sliders[@(kTagSpecDiveRet)]];
+  if (_spec.diveReturnMs() != 150.0f)
+    return fail("dive return did not reach router");
+  _sliders[@(kTagSpecToeRise)].doubleValue = 0.0;
+  [self paramChanged:_sliders[@(kTagSpecToeRise)]];
+  _sliders[@(kTagSpecToeRet)].doubleValue = 0.0;
+  [self paramChanged:_sliders[@(kTagSpecToeRet)]];
+  _sliders[@(kTagSpecDiveDepth)].doubleValue = 12.0;
+  [self paramChanged:_sliders[@(kTagSpecDiveDepth)]];
+  _sliders[@(kTagSpecDiveTime)].doubleValue = 300.0;
+  [self paramChanged:_sliders[@(kTagSpecDiveTime)]];
+  _sliders[@(kTagSpecDiveRet)].doubleValue = 200.0;
+  [self paramChanged:_sliders[@(kTagSpecDiveRet)]];
   // Selectors reach the router (voice + control + insert).
   if ([_specVoiceSeg segmentCount] != 4 || [_specControlSeg segmentCount] != 2
       || [_specInsertSeg segmentCount] != 2)
@@ -2863,6 +3016,13 @@ bool probeDoubleClickReset(std::string& detail)
   [self specToeUp:nil];
   if (_spec.trigger())
     return fail("toe up lost");
+  // Momentary Dive toggles the dive atomic down/up.
+  [self specDiveDown:nil];
+  if (!_spec.dive())
+    return fail("dive down lost");
+  [self specDiveUp:nil];
+  if (_spec.dive())
+    return fail("dive up lost");
   // Transparency: installed-but-off renders bit-identical to no seams.
   _engine->rig().reset(48000.0, 512);
   const int n = 512 * 16; // block-aligned: no ragged tail reads
@@ -2966,6 +3126,33 @@ bool probeDoubleClickReset(std::string& detail)
     if (wet == atkDry)
       return fail("envelope rendered dry");
   }
+  // Divebomb: held dive renders (whammy, manual heel) and releases clean.
+  _specControlSeg.selectedSegment = 0;
+  [self specControlSelected:_specControlSeg];
+  _sliders[@(kTagSpecExpr)].doubleValue = 0.0;
+  [self paramChanged:_sliders[@(kTagSpecExpr)]];
+  _sliders[@(kTagSpecDiveTime)].doubleValue = 50.0;
+  [self paramChanged:_sliders[@(kTagSpecDiveTime)]];
+  [self specDiveDown:nil];
+  {
+    std::vector<float> wet(static_cast<size_t>(na), 0.0f);
+    for (int b = 0; b < 96; ++b)
+    {
+      const float* bi[1] = {atk.data() + b * 512};
+      float* bo[1] = {wet.data() + b * 512};
+      _engine->rig().processBlock(bi, 1, bo, 1, 512);
+    }
+    if (wet == atkDry)
+      return fail("dive rendered dry");
+    bool finite = true;
+    for (float v : wet)
+      finite = finite && std::isfinite(v);
+    if (!finite)
+      return fail("dive non-finite");
+  }
+  [self specDiveUp:nil];
+  _sliders[@(kTagSpecDiveTime)].doubleValue = 300.0;
+  [self paramChanged:_sliders[@(kTagSpecDiveTime)]];
   const tdm::RigParams after = _engine->rig().params();
   if (before.gateEnabled != after.gateEnabled || before.tight != after.tight
       || before.driveEnabled != after.driveEnabled || before.inputTrimDb != after.inputTrimDb)

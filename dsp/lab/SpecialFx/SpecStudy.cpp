@@ -237,6 +237,33 @@ int main(int argc, char** argv)
               }));
   }
 
+  // Divebomb: whammy at +6 st, dive press at 2 s (300 ms down to -12),
+  // release at 4 s (200 ms back). Pre tap.
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setVoice(Voice::Whammy);
+    e.setExpression(0.5f);
+    writeMono(outdir + "/laser_dive_pre.wav", ch.render(di, [&](float x, int n) {
+                const double t = n / kSr;
+                e.setDive(t >= 2.0 && t < 4.0);
+                return e.process(x);
+              }, dry));
+  }
+  // Slow-rise toe stab: 600 ms up, 80 ms back, press 1 s / release 3.5 s.
+  {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setVoice(Voice::Whammy);
+    e.setToeRiseMs(600.0f);
+    e.setToeReturnMs(80.0f);
+    writeMono(outdir + "/laser_toestab_pre.wav", ch.render(di, [&](float x, int n) {
+                const double t = n / kSr;
+                e.setTrigger(t >= 1.0 && t < 3.5);
+                return e.process(x);
+              }, dry));
+  }
+
   SpecLaser lat;
   lat.reset(kSr);
   std::printf("latency laser %d samples @48k (doppler bound; ring leg ~1)\n",
@@ -253,6 +280,11 @@ int main(int argc, char** argv)
   e.reset(kSr);
   e.setControl(Control::Envelope);
   benchUs("laser_envelope", [&](float x) { return e.process(x); });
+  SpecLaser dv;
+  dv.reset(kSr);
+  dv.setDive(true);
+  dv.setToeRiseMs(500.0f);
+  benchUs("laser_diveheld", [&](float x) { return dv.process(x); });
   std::printf("done -> %s\n", outdir.c_str());
   return 0;
 }
