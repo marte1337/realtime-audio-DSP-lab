@@ -170,9 +170,11 @@ void benchUs(const char* name, std::function<float(float)> fn)
 
 int main(int argc, char** argv)
 {
+  using tdm::specfx::GestureConfig;
+  using tdm::specfx::GestureDir;
+  using tdm::specfx::GestureMotion;
   using tdm::specfx::SpecLaser;
   using Voice = SpecLaser::Voice;
-  using Control = SpecLaser::Control;
   std::string outdir = "build/spec";
   std::string namPath = "assets/nam/5150II_crunch.nam";
   std::string irPath = "assets/ir/test_cab.wav";
@@ -200,8 +202,8 @@ int main(int argc, char** argv)
   {
     Voice v;
     const char* name;
-  } voices[] = {{Voice::Whammy, "whammy"}, {Voice::Dual, "dual"}, {Voice::Ring, "ring"},
-                {Voice::Detune, "detune"}};
+  } voices[] = {{Voice::WhamUp, "whamup"}, {Voice::Dual, "dual"}, {Voice::Ring, "ring"},
+                {Voice::Detune, "detune"}, {Voice::WhamDown, "whamdown"}};
   for (const auto& vm : voices)
   {
     SpecLaser e;
@@ -214,17 +216,7 @@ int main(int argc, char** argv)
                 return x + 1.0f * (wet - x); // full wet
               }, dry));
   }
-  // Envelope mode at PRE (whammy + dual): playing drives the sweep.
-  for (const auto& vm : {voices[0], voices[1]})
-  {
-    SpecLaser e;
-    e.reset(kSr);
-    e.setVoice(vm.v);
-    e.setControl(Control::Envelope);
-    writeMono(outdir + std::string("/laser_") + vm.name + "_env_pre.wav",
-              ch.render(di, [&](float x, int) { return e.process(x); }, dry));
-  }
-  // POST tap A/B for whammy sweep + ring sweep.
+  // POST tap A/B for whamup sweep + ring sweep.
   for (const auto& vm : {voices[0], voices[2]})
   {
     SpecLaser e;
@@ -237,32 +229,53 @@ int main(int argc, char** argv)
               }));
   }
 
-  // Divebomb: whammy at +6 st, dive press at 2 s (300 ms down to -12),
+  // Gesture demos (edge-triggered presses through the unified engine).
+  auto gestDemo = [&](const char* file, Voice v, float expr, const GestureConfig& c,
+                      double pressAt, double relAt) {
+    SpecLaser e;
+    e.reset(kSr);
+    e.setVoice(v);
+    e.setExpression(expr);
+    e.setGestureConfig(c);
+    bool held = false;
+    writeMono(outdir + file, ch.render(di, [&](float x, int n) {
+                const double t = n / kSr;
+                if (!held && t >= pressAt)
+                {
+                  e.pressGesture(0);
+                  held = true;
+                }
+                else if (held && t >= relAt)
+                {
+                  e.releaseGesture(0);
+                  held = false;
+                }
+                return e.process(x);
+              }, dry));
+  };
+  auto cfg = [](int voice, GestureDir d, GestureMotion m, float depth, float time, float ret) {
+    GestureConfig c;
+    c.voice = voice;
+    c.dir = d;
+    c.motion = m;
+    c.depthSt = depth;
+    c.timeMs = time;
+    c.retMs = ret;
+    return c;
+  };
+  // Divebomb: whamup at +6 st, dive press at 2 s (300 ms down to -12),
   // release at 4 s (200 ms back). Pre tap.
-  {
-    SpecLaser e;
-    e.reset(kSr);
-    e.setVoice(Voice::Whammy);
-    e.setExpression(0.5f);
-    writeMono(outdir + "/laser_dive_pre.wav", ch.render(di, [&](float x, int n) {
-                const double t = n / kSr;
-                e.setDive(t >= 2.0 && t < 4.0);
-                return e.process(x);
-              }, dry));
-  }
+  gestDemo("/laser_dive_pre.wav", Voice::WhamUp, 0.5f,
+           cfg(4, GestureDir::Down, GestureMotion::ToDepth, 12.0f, 300.0f, 200.0f), 2.0, 4.0);
   // Slow-rise toe stab: 600 ms up, 80 ms back, press 1 s / release 3.5 s.
-  {
-    SpecLaser e;
-    e.reset(kSr);
-    e.setVoice(Voice::Whammy);
-    e.setToeRiseMs(600.0f);
-    e.setToeReturnMs(80.0f);
-    writeMono(outdir + "/laser_toestab_pre.wav", ch.render(di, [&](float x, int n) {
-                const double t = n / kSr;
-                e.setTrigger(t >= 1.0 && t < 3.5);
-                return e.process(x);
-              }, dry));
-  }
+  gestDemo("/laser_toestab_pre.wav", Voice::WhamUp, 0.0f,
+           cfg(0, GestureDir::Up, GestureMotion::ToDepth, 12.0f, 600.0f, 80.0f), 1.0, 3.5);
+  // Reverse dive (From Depth): engaged deep at 2 s, sweeps home by ~2.5 s.
+  gestDemo("/laser_revdive_pre.wav", Voice::WhamDown, 0.0f,
+           cfg(4, GestureDir::Down, GestureMotion::FromDepth, 12.0f, 400.0f, 200.0f), 2.0, 4.0);
+  // Ring sweep across voices: whamup normal + carrier rise on press.
+  gestDemo("/laser_ringsweep_pre.wav", Voice::WhamUp, 0.0f,
+           cfg(2, GestureDir::Up, GestureMotion::ToDepth, 12.0f, 500.0f, 300.0f), 2.0, 4.0);
 
   SpecLaser lat;
   lat.reset(kSr);
@@ -276,15 +289,16 @@ int main(int argc, char** argv)
     e.setExpression(0.75f);
     benchUs((std::string("laser_") + vm.name).c_str(), [&](float x) { return e.process(x); });
   }
-  SpecLaser e;
-  e.reset(kSr);
-  e.setControl(Control::Envelope);
-  benchUs("laser_envelope", [&](float x) { return e.process(x); });
   SpecLaser dv;
   dv.reset(kSr);
-  dv.setDive(true);
-  dv.setToeRiseMs(500.0f);
+  dv.setGestureConfig(cfg(4, GestureDir::Down, GestureMotion::ToDepth, 12.0f, 300.0f, 200.0f));
+  dv.pressGesture(1);
   benchUs("laser_diveheld", [&](float x) { return dv.process(x); });
+  SpecLaser gx;
+  gx.reset(kSr);
+  gx.setGestureConfig(cfg(2, GestureDir::Up, GestureMotion::ToDepth, 12.0f, 100.0f, 100.0f));
+  gx.pressGesture(4);
+  benchUs("laser_ringheld", [&](float x) { return gx.process(x); });
   std::printf("done -> %s\n", outdir.c_str());
   return 0;
 }

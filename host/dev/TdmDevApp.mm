@@ -141,17 +141,13 @@ enum SliderTag
   kTagAlienWarpHz,
   kTagAlienWarpSt,
   kTagAlienWarpFb,
-  // SPECIAL FX LAB section (laser engine; all live).
+  // CREATIVE PITCH section (laser engine; live).
   kTagSpecExpr,
-  kTagSpecSpeed,
-  kTagSpecSens,
   kTagSpecMix,
-  // Performance gestures (Toe Rise/Return, Dive Depth/Time/Return).
-  kTagSpecToeRise,
-  kTagSpecToeRet,
-  kTagSpecDiveDepth,
-  kTagSpecDiveTime,
-  kTagSpecDiveRet
+  // PERFORMANCE GESTURES section (staged per-slot edits; Save commits).
+  kTagGestDepth,
+  kTagGestTime,
+  kTagGestRet
 };
 
 // GT2 advanced rows use their own tag band (field index + base) with a
@@ -220,22 +216,14 @@ double resetValueForTag(SliderTag tag)
     return 0.5;
   case kTagSpecExpr:
     return 0.0; // expression heel (dry/unison start)
-  case kTagSpecSpeed:
-    return 60.0;
-  case kTagSpecSens:
-    return 60.0;
   case kTagSpecMix:
     return 100.0;
-  case kTagSpecToeRise:
-    return 0.0; // 0 ms = instant = legacy fast stab (exact)
-  case kTagSpecToeRet:
-    return 0.0;
-  case kTagSpecDiveDepth:
-    return 12.0;
-  case kTagSpecDiveTime:
-    return 300.0;
-  case kTagSpecDiveRet:
-    return 200.0;
+  case kTagGestDepth:
+    return 12.0; // gesture modal defaults (per-slot factory on select)
+  case kTagGestTime:
+    return 100.0;
+  case kTagGestRet:
+    return 100.0;
   }
   return 0.0;
 }
@@ -287,14 +275,10 @@ int smokeTest()
     check((float)resetValueForTag(kTagAlienWarpSt) == 3.0f, "reset: alien warp st -> +3 st");
     check((float)resetValueForTag(kTagAlienWarpFb) == 0.5f, "reset: alien warp fb -> 0.50");
     check((float)resetValueForTag(kTagSpecExpr) == 0.0f, "reset: spec expr -> heel");
-    check((float)resetValueForTag(kTagSpecSpeed) == 60.0f, "reset: spec speed -> 60");
-    check((float)resetValueForTag(kTagSpecSens) == 60.0f, "reset: spec sens -> 60");
     check((float)resetValueForTag(kTagSpecMix) == 100.0f, "reset: spec mix -> 100%");
-    check((float)resetValueForTag(kTagSpecToeRise) == 0.0f, "reset: spec toe rise -> 0");
-    check((float)resetValueForTag(kTagSpecToeRet) == 0.0f, "reset: spec toe ret -> 0");
-    check((float)resetValueForTag(kTagSpecDiveDepth) == 12.0f, "reset: spec dive depth -> 12");
-    check((float)resetValueForTag(kTagSpecDiveTime) == 300.0f, "reset: spec dive time -> 300");
-    check((float)resetValueForTag(kTagSpecDiveRet) == 200.0f, "reset: spec dive ret -> 200");
+    check((float)resetValueForTag(kTagGestDepth) == 12.0f, "reset: gest depth -> 12");
+    check((float)resetValueForTag(kTagGestTime) == 100.0f, "reset: gest time -> 100");
+    check((float)resetValueForTag(kTagGestRet) == 100.0f, "reset: gest ret -> 100");
     // Double-click behavior on the real control (defined after the control
     // classes below): a synthesized double-click parks the reset value and
     // fires the normal action exactly once.
@@ -481,7 +465,7 @@ int smokeTest()
 
 // Momentary push button: fires downAction on press and upAction on
 // release (super tracks the press, so control returns after mouseUp).
-// Used for the Special FX Toe trigger (reference Trigger semantics).
+// Used for the performance-gesture TRIGGER (press/release slot command).
 @interface TdmMomentaryButton : NSButton
 @property(nonatomic) SEL downAction;
 @property(nonatomic) SEL upAction;
@@ -652,8 +636,18 @@ bool probeDoubleClickReset(std::string& detail)
   tdm::specfx::DevSpecFx _spec;
   NSButton* _specCheck;
   NSSegmentedControl* _specVoiceSeg;
-  NSSegmentedControl* _specControlSeg;
   NSSegmentedControl* _specInsertSeg;
+  // Performance-gesture editor: per-slot STAGED configs + names (UI-side
+  // only). Save commits the displayed slot; TRIGGER/1-Shot commit, then
+  // fire by slot ID. External (future MIDI) triggers bypass staging.
+  NSPopUpButton* _specGestPopup;
+  NSTextField* _specGestName;
+  NSSegmentedControl* _specGestEffectSeg;
+  NSSegmentedControl* _specGestDirSeg;
+  NSSegmentedControl* _specGestMotionSeg;
+  int _specGestSlot; // displayed slot (UI-side only; never addresses audio)
+  tdm::specfx::GestureConfig _specGestStage[tdm::specfx::kNumGestureSlots];
+  NSMutableArray<NSString*>* _specGestNames;
   NSWindow* _window;
   NSTextField* _statusLabel;
   NSTextField* _transposeStatus;
@@ -747,23 +741,21 @@ bool probeDoubleClickReset(std::string& detail)
     _alien.setWarpFb(0.5f);
     _alien.setWarpShiftHz(100.0f);
     _alien.setWarpSt(3.0f);
-    // Special FX lab state: off (dry start), Whammy, Manual, heel,
+    // Creative Pitch lab state: off (dry start), WhamUp, heel,
     // pre-gain insert. Installed into both spec seams pre-start (off-RT).
+    // Gesture slots init to factory in the router; staging mirrors them.
     _spec.setEnabled(false);
-    _spec.setVoice(tdm::specfx::DevSpecFx::Voice::Whammy);
-    _spec.setControl(tdm::specfx::DevSpecFx::Control::Manual);
+    _spec.setVoice(tdm::specfx::DevSpecFx::Voice::WhamUp);
     _spec.setExpression(0.0f);
-    _spec.setSpeed(0.6f);
-    _spec.setSensitivity(0.6f);
     _spec.setMix(1.0f);
-    _spec.setTrigger(false);
-    _spec.setToeRiseMs(0.0f);
-    _spec.setToeReturnMs(0.0f);
-    _spec.setDive(false);
-    _spec.setDiveDepthSt(12.0f);
-    _spec.setDiveTimeMs(300.0f);
-    _spec.setDiveReturnMs(200.0f);
     _spec.setInsert(tdm::specfx::DevSpecFx::Insert::Pre);
+    _specGestSlot = 0;
+    _specGestNames = [NSMutableArray array];
+    for (int i = 0; i < tdm::specfx::kNumGestureSlots; ++i)
+    {
+      _specGestStage[i] = tdm::specfx::defaultGestureConfig(i);
+      [_specGestNames addObject:[NSString stringWithUTF8String:tdm::specfx::defaultGestureName(i)]];
+    }
     _lastStepper = 0.0;
     _advShown = 0.0;
     _gt2Open = NO;
@@ -1196,9 +1188,15 @@ bool probeDoubleClickReset(std::string& detail)
                width:kWidth];
   y += 40;
 
-  // Transpose section (signal-flow position: Gate -> Transpose -> Drive).
-  // Engine/shift/enable apply live through the stage atomics; GT2 advanced
-  // edits apply on the next Start (see the disclosure panels below).
+  // PITCH SHIFT group: TRANSPOSE (stable retuning, in signal-flow
+  // position Gate -> Transpose -> Drive) + CREATIVE PITCH + PERFORMANCE
+  // GESTURES below the disclosure anchor. DSP routing is untouched by
+  // this consolidation; only the DEV controls move together.
+  NSTextField* pitchHead = [self makeLabel:@"PITCH SHIFT" frame:NSMakeRect(20, y, 180, 22) small:NO];
+  [_docView addSubview:pitchHead];
+  y += 26;
+  // Transpose section. Engine/shift/enable apply live through the stage
+  // atomics; GT2 advanced edits apply on the next Start (see below).
   _transposeCheck = [NSButton checkboxWithTitle:@"Transpose"
                                         target:self
                                         action:@selector(transposeToggled:)];
@@ -1243,7 +1241,169 @@ bool probeDoubleClickReset(std::string& detail)
   [self buildGt2Panel:kWidth];
   [self buildT3kPanel:kWidth];
   const NSUInteger lowerStart = _docView.subviews.count;
-  y += 10; // breathing room above the SLAM section when panels are closed
+  y += 10; // breathing room above Creative Pitch when panels are closed
+
+  // CREATIVE PITCH subsection (DEV research: expression-driven Laser at
+  // pre-gain and post-IR taps. One normalized expression position drives
+  // per-voice heel/toe maps; performance gestures below automate moves).
+  _specCheck = [NSButton checkboxWithTitle:@"Creative Pitch"
+                                    target:self
+                                    action:@selector(specToggled:)];
+  _specCheck.frame = NSMakeRect(20, y, 180, 22);
+  _specCheck.state = NSControlStateValueOff; // dry start; enable to audition
+  [_docView addSubview:_specCheck];
+  y += 30;
+  NSTextField* specVoiceLabel = [self makeLabel:@"Effect" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:specVoiceLabel];
+  _specVoiceSeg = [NSSegmentedControl
+      segmentedControlWithLabels:@[ @"Wham \u2191", @"Wham \u2193", @"Dual", @"Ring", @"Detune" ]
+                    trackingMode:NSSegmentSwitchTrackingSelectOne
+                          target:self
+                          action:@selector(specVoiceSelected:)];
+  _specVoiceSeg.frame = NSMakeRect(135, y - 2, 400, 26);
+  _specVoiceSeg.selectedSegment = 0;
+  [_docView addSubview:_specVoiceSeg];
+  y += 30;
+  [self addSliderRow:@"Expression"
+                 tag:kTagSpecExpr
+                 min:0
+                 max:100
+                init:0
+               reset:0
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Mix"
+                 tag:kTagSpecMix
+                 min:0
+                 max:100
+                init:100
+               reset:100
+                   y:y
+               width:kWidth];
+  y += 30;
+  NSTextField* specInsertLabel = [self makeLabel:@"Insert" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:specInsertLabel];
+  _specInsertSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Pre", @"Post" ]
+                                                   trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                         target:self
+                                                         action:@selector(specInsertSelected:)];
+  _specInsertSeg.frame = NSMakeRect(135, y - 2, 200, 26);
+  _specInsertSeg.selectedSegment = 0;
+  [_docView addSubview:_specInsertSeg];
+  y += 30;
+  y += 8; // breathing room above the gestures caption
+  NSTextField* gestHead = [self makeLabel:@"PERFORMANCE GESTURES"
+                                    frame:NSMakeRect(20, y, 240, 22)
+                                    small:NO];
+  [_docView addSubview:gestHead];
+  y += 30;
+  NSTextField* gestSlotLabel = [self makeLabel:@"Gesture" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:gestSlotLabel];
+  _specGestPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(135, y - 2, 200, 26) pullsDown:NO];
+  for (int i = 0; i < tdm::specfx::kNumGestureSlots; ++i)
+    [_specGestPopup addItemWithTitle:[NSString stringWithFormat:@"%d: %@", i + 1, _specGestNames[i]]];
+  [_specGestPopup selectItemAtIndex:0];
+  _specGestPopup.target = self;
+  _specGestPopup.action = @selector(specGestPopupSelected:);
+  [_docView addSubview:_specGestPopup];
+  TdmMomentaryButton* gestTrig =
+      [[TdmMomentaryButton alloc] initWithFrame:NSMakeRect(345, y - 2, 90, 26)];
+  gestTrig.title = @"Trigger";
+  gestTrig.bezelStyle = NSBezelStyleRounded;
+  gestTrig.target = self;
+  gestTrig.downAction = @selector(specGestDown:);
+  gestTrig.upAction = @selector(specGestUp:);
+  gestTrig.toolTip = @"Commits staged edits, then momentary-triggers the displayed slot";
+  [_docView addSubview:gestTrig];
+  NSButton* gestOne =
+      [NSButton buttonWithTitle:@"1-Shot" target:self action:@selector(specGestOneShot:)];
+  gestOne.frame = NSMakeRect(445, y - 2, 80, 26);
+  gestOne.bezelStyle = NSBezelStyleRounded;
+  gestOne.toolTip = @"Commits staged edits, then one-shot-triggers the displayed slot";
+  [_docView addSubview:gestOne];
+  y += 30;
+  NSTextField* gestNameLabel = [self makeLabel:@"Name" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:gestNameLabel];
+  _specGestName = [[NSTextField alloc] initWithFrame:NSMakeRect(135, y, 200, 22)];
+  _specGestName.stringValue = _specGestNames[0];
+  [_docView addSubview:_specGestName];
+  y += 30;
+  NSTextField* gestEffectLabel =
+      [self makeLabel:@"Effect" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:gestEffectLabel];
+  _specGestEffectSeg = [NSSegmentedControl
+      segmentedControlWithLabels:@[ @"Wham \u2191", @"Wham \u2193", @"Dual", @"Ring" ]
+                    trackingMode:NSSegmentSwitchTrackingSelectOne
+                          target:self
+                          action:@selector(specGestEffectSelected:)];
+  _specGestEffectSeg.frame = NSMakeRect(135, y - 2, 340, 26);
+  _specGestEffectSeg.selectedSegment = 0;
+  [_docView addSubview:_specGestEffectSeg];
+  y += 30;
+  NSTextField* gestDirLabel = [self makeLabel:@"Direction" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:gestDirLabel];
+  _specGestDirSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Up", @"Down" ]
+                                                    trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                          target:self
+                                                          action:@selector(specGestDirSelected:)];
+  _specGestDirSeg.frame = NSMakeRect(135, y - 2, 200, 26);
+  _specGestDirSeg.selectedSegment = 0;
+  [_docView addSubview:_specGestDirSeg];
+  y += 30;
+  [self addSliderRow:@"Depth"
+                 tag:kTagGestDepth
+                 min:0
+                 max:tdm::specfx::kMaxGestureDepthSt
+                init:12
+               reset:12
+                   y:y
+               width:kWidth];
+  y += 30;
+  NSTextField* gestMotionLabel =
+      [self makeLabel:@"Motion" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:gestMotionLabel];
+  _specGestMotionSeg = [NSSegmentedControl
+      segmentedControlWithLabels:@[ @"To Depth", @"From Depth" ]
+                    trackingMode:NSSegmentSwitchTrackingSelectOne
+                          target:self
+                          action:@selector(specGestMotionSelected:)];
+  _specGestMotionSeg.frame = NSMakeRect(135, y - 2, 260, 26);
+  _specGestMotionSeg.selectedSegment = 0;
+  [_docView addSubview:_specGestMotionSeg];
+  y += 30;
+  [self addSliderRow:@"Time"
+                 tag:kTagGestTime
+                 min:0
+                 max:1000
+                init:50
+               reset:50
+                   y:y
+               width:kWidth];
+  y += 30;
+  [self addSliderRow:@"Return"
+                 tag:kTagGestRet
+                 min:0
+                 max:1000
+                init:100
+               reset:100
+                   y:y
+               width:kWidth];
+  y += 30;
+  NSTextField* gestSaveLabel = [self makeLabel:@"Slot" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:gestSaveLabel];
+  NSButton* gestSave = [NSButton buttonWithTitle:@"Save Slot" target:self action:@selector(specGestSave:)];
+  gestSave.frame = NSMakeRect(135, y - 2, 110, 26);
+  gestSave.bezelStyle = NSBezelStyleRounded;
+  [_docView addSubview:gestSave];
+  NSButton* gestReset =
+      [NSButton buttonWithTitle:@"Reset Slot" target:self action:@selector(specGestReset:)];
+  gestReset.frame = NSMakeRect(255, y - 2, 110, 26);
+  gestReset.bezelStyle = NSBezelStyleRounded;
+  [_docView addSubview:gestReset];
+  y += 30;
+  [self refreshGestureUI]; // sync fields to staging (slot 0 factory)
+  y += 14; // gap above the SLAM section
 
   // SLAM section (DEV audition: Push/Crush/Mass across three taps; Impact
   // stays parked in research — DSP preserved, hidden from the selector).
@@ -1423,150 +1583,6 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 30;
-  y += 14; // gap above the Special FX section
-
-  // SPECIAL FX LAB section (DEV research: expression-driven Laser at
-  // pre-gain and post-IR taps. One normalized expression position drives
-  // per-voice heel/toe maps; Manual slider or envelope follower sources
-  // it; Toe forces full expression while held, Manual only).
-  _specCheck = [NSButton checkboxWithTitle:@"Special FX" target:self action:@selector(specToggled:)];
-  _specCheck.frame = NSMakeRect(20, y, 180, 22);
-  _specCheck.state = NSControlStateValueOff; // dry start; enable to audition
-  [_docView addSubview:_specCheck];
-  y += 30;
-  NSTextField* specEngineLabel = [self makeLabel:@"Engine" frame:NSMakeRect(20, y, 110, 22) small:NO];
-  [_docView addSubview:specEngineLabel];
-  NSTextField* specEngineName = [self makeLabel:@"Laser" frame:NSMakeRect(135, y, 110, 22) small:NO];
-  [_docView addSubview:specEngineName];
-  y += 30;
-  NSTextField* specVoiceLabel = [self makeLabel:@"Voice" frame:NSMakeRect(20, y, 110, 22) small:NO];
-  [_docView addSubview:specVoiceLabel];
-  _specVoiceSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Whammy", @"Dual", @"Ring", @"Detune" ]
-                                                   trackingMode:NSSegmentSwitchTrackingSelectOne
-                                                         target:self
-                                                         action:@selector(specVoiceSelected:)];
-  _specVoiceSeg.frame = NSMakeRect(135, y - 2, 380, 26);
-  _specVoiceSeg.selectedSegment = 0;
-  [_docView addSubview:_specVoiceSeg];
-  y += 30;
-  NSTextField* specControlLabel = [self makeLabel:@"Control" frame:NSMakeRect(20, y, 110, 22) small:NO];
-  [_docView addSubview:specControlLabel];
-  _specControlSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Manual", @"Envelope" ]
-                                                     trackingMode:NSSegmentSwitchTrackingSelectOne
-                                                           target:self
-                                                           action:@selector(specControlSelected:)];
-  _specControlSeg.frame = NSMakeRect(135, y - 2, 260, 26);
-  _specControlSeg.selectedSegment = 0;
-  [_docView addSubview:_specControlSeg];
-  y += 30;
-  [self addSliderRow:@"Expression"
-                 tag:kTagSpecExpr
-                 min:0
-                 max:100
-                init:0
-               reset:0
-                   y:y
-               width:kWidth];
-  y += 30;
-  [self addSliderRow:@"Speed"
-                 tag:kTagSpecSpeed
-                 min:0
-                 max:100
-                init:60
-               reset:60
-                   y:y
-               width:kWidth];
-  y += 30;
-  [self addSliderRow:@"Sensitivity"
-                 tag:kTagSpecSens
-                 min:0
-                 max:100
-                init:60
-               reset:60
-                   y:y
-               width:kWidth];
-  y += 30;
-  [self addSliderRow:@"Mix"
-                 tag:kTagSpecMix
-                 min:0
-                 max:100
-                init:100
-               reset:100
-                   y:y
-               width:kWidth];
-  y += 30;
-  [self addSliderRow:@"Toe Rise" // 0 = instant legacy stab; up to 1 s sweep
-                 tag:kTagSpecToeRise
-                 min:0
-                 max:1000
-                init:0
-               reset:0
-                   y:y
-               width:kWidth];
-  y += 30;
-  [self addSliderRow:@"Toe Return"
-                 tag:kTagSpecToeRet
-                 min:0
-                 max:1000
-                init:0
-               reset:0
-                   y:y
-               width:kWidth];
-  y += 30;
-  NSTextField* specToeLabel = [self makeLabel:@"Trigger" frame:NSMakeRect(20, y, 110, 22) small:NO];
-  [_docView addSubview:specToeLabel];
-  TdmMomentaryButton* specToe = [[TdmMomentaryButton alloc] initWithFrame:NSMakeRect(135, y - 2, 120, 26)];
-  specToe.title = @"Toe";
-  specToe.bezelStyle = NSBezelStyleRounded;
-  specToe.target = self;
-  specToe.downAction = @selector(specToeDown:);
-  specToe.upAction = @selector(specToeUp:);
-  [_docView addSubview:specToe];
-  TdmMomentaryButton* specDive = [[TdmMomentaryButton alloc] initWithFrame:NSMakeRect(265, y - 2, 120, 26)];
-  specDive.title = @"Dive";
-  specDive.bezelStyle = NSBezelStyleRounded;
-  specDive.target = self;
-  specDive.downAction = @selector(specDiveDown:);
-  specDive.upAction = @selector(specDiveUp:);
-  [_docView addSubview:specDive];
-  y += 30;
-  [self addSliderRow:@"Dive Depth"
-                 tag:kTagSpecDiveDepth
-                 min:0
-                 max:tdm::specfx::SpecLaser::kMaxDiveDepthSt
-                init:12
-               reset:12
-                   y:y
-               width:kWidth];
-  y += 30;
-  [self addSliderRow:@"Dive Time"
-                 tag:kTagSpecDiveTime
-                 min:0
-                 max:1000
-                init:300
-               reset:300
-                   y:y
-               width:kWidth];
-  y += 30;
-  [self addSliderRow:@"Dive Return"
-                 tag:kTagSpecDiveRet
-                 min:0
-                 max:1000
-                init:200
-               reset:200
-                   y:y
-               width:kWidth];
-  y += 30;
-  NSTextField* specInsertLabel = [self makeLabel:@"Insert" frame:NSMakeRect(20, y, 110, 22) small:NO];
-  [_docView addSubview:specInsertLabel];
-  _specInsertSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Pre", @"Post" ]
-                                                    trackingMode:NSSegmentSwitchTrackingSelectOne
-                                                          target:self
-                                                          action:@selector(specInsertSelected:)];
-  _specInsertSeg.frame = NSMakeRect(135, y - 2, 200, 26);
-  _specInsertSeg.selectedSegment = 0;
-  [_docView addSubview:_specInsertSeg];
-  y += 30;
   y += 14; // gap above the ToneShape section
 
   // ToneShape section (post-cab; neutral is transparent).
@@ -1671,7 +1687,7 @@ bool probeDoubleClickReset(std::string& detail)
                    y:y
                width:kWidth];
   y += 34;
-  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no meters. Alien + Special FX labs."
+  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no meters. Alien + Pitch Shift labs."
                                 frame:NSMakeRect(20, y, kWidth - 40, 22)
                                 small:YES];
   [_docView addSubview:foot];
@@ -1771,22 +1787,13 @@ bool probeDoubleClickReset(std::string& detail)
   _valueLabels[@(kTagAlienWarpFb)].stringValue = fmt01(_alien.warpFb());
   _valueLabels[@(kTagSpecExpr)].stringValue =
       [NSString stringWithFormat:@"%.0f%%", _spec.expression() * 100.0];
-  _valueLabels[@(kTagSpecSpeed)].stringValue =
-      [NSString stringWithFormat:@"%.0f%%", _spec.speed() * 100.0];
-  _valueLabels[@(kTagSpecSens)].stringValue =
-      [NSString stringWithFormat:@"%.0f%%", _spec.sensitivity() * 100.0];
   _valueLabels[@(kTagSpecMix)].stringValue =
       [NSString stringWithFormat:@"%.0f%%", _spec.mix01() * 100.0];
-  _valueLabels[@(kTagSpecToeRise)].stringValue =
-      [NSString stringWithFormat:@"%.0f ms", _spec.toeRiseMs()];
-  _valueLabels[@(kTagSpecToeRet)].stringValue =
-      [NSString stringWithFormat:@"%.0f ms", _spec.toeReturnMs()];
-  _valueLabels[@(kTagSpecDiveDepth)].stringValue =
-      [NSString stringWithFormat:@"-%.1f st", _spec.diveDepthSt()];
-  _valueLabels[@(kTagSpecDiveTime)].stringValue =
-      [NSString stringWithFormat:@"%.0f ms", _spec.diveTimeMs()];
-  _valueLabels[@(kTagSpecDiveRet)].stringValue =
-      [NSString stringWithFormat:@"%.0f ms", _spec.diveReturnMs()];
+  // Gesture labels show STAGED (possibly uncommitted) edits, like the fields.
+  const tdm::specfx::GestureConfig& gst = _specGestStage[_specGestSlot];
+  _valueLabels[@(kTagGestDepth)].stringValue = [NSString stringWithFormat:@"%.1f st", gst.depthSt];
+  _valueLabels[@(kTagGestTime)].stringValue = [NSString stringWithFormat:@"%.0f ms", gst.timeMs];
+  _valueLabels[@(kTagGestRet)].stringValue = [NSString stringWithFormat:@"%.0f ms", gst.retMs];
 }
 
 // GT2 advanced value labels from stored (pending) config.
@@ -1935,29 +1942,17 @@ bool probeDoubleClickReset(std::string& detail)
   case kTagSpecExpr:
     _spec.setExpression((float)(v / 100.0)); // live lab controls
     break;
-  case kTagSpecSpeed:
-    _spec.setSpeed((float)(v / 100.0));
-    break;
-  case kTagSpecSens:
-    _spec.setSensitivity((float)(v / 100.0));
-    break;
   case kTagSpecMix:
     _spec.setMix((float)(v / 100.0));
     break;
-  case kTagSpecToeRise:
-    _spec.setToeRiseMs((float)v); // gesture rates (ms) + dive depth (st)
+  case kTagGestDepth: // staged gesture edits (Save commits the slot)
+    _specGestStage[_specGestSlot].depthSt = (float)v;
     break;
-  case kTagSpecToeRet:
-    _spec.setToeReturnMs((float)v);
+  case kTagGestTime:
+    _specGestStage[_specGestSlot].timeMs = (float)v;
     break;
-  case kTagSpecDiveDepth:
-    _spec.setDiveDepthSt((float)v);
-    break;
-  case kTagSpecDiveTime:
-    _spec.setDiveTimeMs((float)v);
-    break;
-  case kTagSpecDiveRet:
-    _spec.setDiveReturnMs((float)v);
+  case kTagGestRet:
+    _specGestStage[_specGestSlot].retMs = (float)v;
     break;
   default:
     break;
@@ -2165,8 +2160,9 @@ bool probeDoubleClickReset(std::string& detail)
   _alien.triggerLaser();
 }
 
-// Special FX actions: lock-free atomic stores adopted at the next audio
-// block, exactly like the rig handoff. Toe is momentary (down/up pair).
+// Creative Pitch + gesture actions: lock-free atomic stores adopted at
+// the next audio block, exactly like the rig handoff. TRIGGER is
+// momentary (down/up pair) and commits staged edits before firing.
 - (void)specToggled:(NSButton*)sender
 {
   _spec.setEnabled(sender.state == NSControlStateValueOn);
@@ -2176,14 +2172,11 @@ bool probeDoubleClickReset(std::string& detail)
 {
   using Voice = tdm::specfx::DevSpecFx::Voice;
   const NSInteger seg = sender.selectedSegment;
-  _spec.setVoice(seg == 1 ? Voice::Dual : seg == 2 ? Voice::Ring : seg == 3 ? Voice::Detune
-                                                                            : Voice::Whammy);
-}
-
-- (void)specControlSelected:(NSSegmentedControl*)sender
-{
-  using Control = tdm::specfx::DevSpecFx::Control;
-  _spec.setControl(sender.selectedSegment == 1 ? Control::Envelope : Control::Manual);
+  _spec.setVoice(seg == 1   ? Voice::WhamDown
+                 : seg == 2 ? Voice::Dual
+                 : seg == 3 ? Voice::Ring
+                 : seg == 4 ? Voice::Detune
+                            : Voice::WhamUp);
 }
 
 - (void)specInsertSelected:(NSSegmentedControl*)sender
@@ -2192,28 +2185,103 @@ bool probeDoubleClickReset(std::string& detail)
   _spec.setInsert(sender.selectedSegment == 1 ? Insert::Post : Insert::Pre);
 }
 
-- (void)specToeDown:(id)sender
+// Sync every gesture field to the displayed slot's staging (popup, name,
+// segments, sliders + per-slot double-click resets, labels).
+- (void)refreshGestureUI
 {
-  (void)sender;
-  _spec.setTrigger(true);
+  const int s = _specGestSlot;
+  const tdm::specfx::GestureConfig& c = _specGestStage[s];
+  [_specGestPopup selectItemAtIndex:s];
+  _specGestName.stringValue = _specGestNames[s];
+  _specGestEffectSeg.selectedSegment =
+      (c.voice == 4) ? 1 : (c.voice == 1) ? 2 : (c.voice == 2) ? 3 : 0;
+  _specGestDirSeg.selectedSegment = (c.dir == tdm::specfx::GestureDir::Down) ? 1 : 0;
+  _specGestMotionSeg.selectedSegment =
+      (c.motion == tdm::specfx::GestureMotion::FromDepth) ? 1 : 0;
+  _sliders[@(kTagGestDepth)].doubleValue = c.depthSt;
+  _sliders[@(kTagGestTime)].doubleValue = c.timeMs;
+  _sliders[@(kTagGestRet)].doubleValue = c.retMs;
+  const tdm::specfx::GestureConfig fc = tdm::specfx::defaultGestureConfig(s);
+  ((TdmResetSlider*)_sliders[@(kTagGestDepth)]).resetValue = fc.depthSt;
+  ((TdmResetSlider*)_sliders[@(kTagGestTime)]).resetValue = fc.timeMs;
+  ((TdmResetSlider*)_sliders[@(kTagGestRet)]).resetValue = fc.retMs;
+  [self refreshValueLabels:_engine->rig().params()];
 }
 
-- (void)specToeUp:(id)sender
+- (void)specGestPopupSelected:(NSPopUpButton*)sender
 {
-  (void)sender;
-  _spec.setTrigger(false);
+  _specGestSlot = (int)sender.indexOfSelectedItem;
+  [self refreshGestureUI];
 }
 
-- (void)specDiveDown:(id)sender
+- (void)specGestEffectSelected:(NSSegmentedControl*)sender
 {
-  (void)sender;
-  _spec.setDive(true);
+  const NSInteger seg = sender.selectedSegment;
+  _specGestStage[_specGestSlot].voice =
+      (seg == 1) ? 4 : (seg == 2) ? 1 : (seg == 3) ? 2 : 0; // Dn/Dual/Ring/Up
 }
 
-- (void)specDiveUp:(id)sender
+- (void)specGestDirSelected:(NSSegmentedControl*)sender
+{
+  _specGestStage[_specGestSlot].dir =
+      (sender.selectedSegment == 1) ? tdm::specfx::GestureDir::Down : tdm::specfx::GestureDir::Up;
+}
+
+- (void)specGestMotionSelected:(NSSegmentedControl*)sender
+{
+  _specGestStage[_specGestSlot].motion = (sender.selectedSegment == 1)
+      ? tdm::specfx::GestureMotion::FromDepth
+      : tdm::specfx::GestureMotion::ToDepth;
+}
+
+// Commit the displayed slot's staging (fields + name) to the router.
+- (void)specGestSave:(id)sender
 {
   (void)sender;
-  _spec.setDive(false);
+  const int s = _specGestSlot;
+  const tdm::specfx::GestureConfig& c = _specGestStage[s];
+  _specGestNames[s] = _specGestName.stringValue;
+  [_specGestPopup itemAtIndex:s]
+      .title = [NSString stringWithFormat:@"%d: %@", s + 1, _specGestNames[s]];
+  _spec.setSlotVoice(s, static_cast<tdm::specfx::DevSpecFx::Voice>(c.voice));
+  _spec.setSlotDir(s, c.dir);
+  _spec.setSlotMotion(s, c.motion);
+  _spec.setSlotDepthSt(s, c.depthSt);
+  _spec.setSlotTimeMs(s, c.timeMs);
+  _spec.setSlotRetMs(s, c.retMs);
+}
+
+// Restore the displayed slot (router + staging + fields) to factory.
+- (void)specGestReset:(id)sender
+{
+  (void)sender;
+  const int s = _specGestSlot;
+  _spec.resetSlot(s);
+  _specGestStage[s] = tdm::specfx::defaultGestureConfig(s);
+  _specGestNames[s] = [NSString stringWithUTF8String:tdm::specfx::defaultGestureName(s)];
+  [_specGestPopup itemAtIndex:s]
+      .title = [NSString stringWithFormat:@"%d: %@", s + 1, _specGestNames[s]];
+  [self refreshGestureUI];
+}
+
+- (void)specGestDown:(id)sender
+{
+  (void)sender;
+  [self specGestSave:nil]; // trigger what the fields show
+  _spec.pressSlot(_specGestSlot);
+}
+
+- (void)specGestUp:(id)sender
+{
+  (void)sender;
+  _spec.releaseSlot(_specGestSlot);
+}
+
+- (void)specGestOneShot:(id)sender
+{
+  (void)sender;
+  [self specGestSave:nil];
+  _spec.oneShotSlot(_specGestSlot);
 }
 
 - (void)refreshTuner
@@ -2896,26 +2964,25 @@ bool probeDoubleClickReset(std::string& detail)
     return NO;
   };
   using Voice = tdm::specfx::DevSpecFx::Voice;
-  using Control = tdm::specfx::DevSpecFx::Control;
   using Insert = tdm::specfx::DevSpecFx::Insert;
-  // Defaults: checkbox off, Whammy, Manual, heel, 60/60, 100%, Pre.
+  // Defaults: checkbox off, WhamUp, heel, 100%, Pre, slot 0 staged+committed.
   if (_specCheck.state != NSControlStateValueOff)
     return fail("checkbox not off");
-  if (_spec.isEnabled() || _spec.voice() != Voice::Whammy || _spec.control() != Control::Manual)
+  if (_spec.isEnabled() || _spec.voice() != Voice::WhamUp)
     return fail("router defaults wrong");
-  if (_spec.expression() != 0.0f || _spec.speed() != 0.6f || _spec.sensitivity() != 0.6f
-      || _spec.mix01() != 1.0f || _spec.trigger() || _spec.insert() != Insert::Pre)
+  if (_spec.expression() != 0.0f || _spec.mix01() != 1.0f || _spec.insert() != Insert::Pre)
     return fail("router param defaults wrong");
-  if (_spec.dive() || _spec.toeRiseMs() != 0.0f || _spec.toeReturnMs() != 0.0f
-      || _spec.diveDepthSt() != 12.0f || _spec.diveTimeMs() != 300.0f
-      || _spec.diveReturnMs() != 200.0f)
-    return fail("router gesture defaults wrong");
-  if (_specVoiceSeg.selectedSegment != 0 || _specControlSeg.selectedSegment != 0
-      || _specInsertSeg.selectedSegment != 0)
-    return fail("segments not on Whammy/Manual/Pre");
+  if (_spec.slotVoice(0) != Voice::WhamUp || _spec.slotTimeMs(0) != 50.0f
+      || _spec.slotRetMs(0) != 100.0f || _spec.slotDepthSt(0) != 12.0f)
+    return fail("router slot 0 not factory");
+  if (_specVoiceSeg.selectedSegment != 0 || _specInsertSeg.selectedSegment != 0)
+    return fail("segments not on WhamUp/Pre");
+  if ([_specGestPopup numberOfItems] != tdm::specfx::kNumGestureSlots
+      || [_specGestPopup indexOfSelectedItem] != 0)
+    return fail("gesture popup wrong");
   if (_engine->rig().specPre() == nullptr || _engine->rig().specPost() == nullptr)
     return fail("seams not installed");
-  // Drive every slider through the real action; adoption + label.
+  // Drive every creative slider through the real action; adoption + label.
   _sliders[@(kTagSpecExpr)].doubleValue = 75.0;
   [self paramChanged:_sliders[@(kTagSpecExpr)]];
   if (std::fabs(_spec.expression() - 0.75f) > 1e-6f)
@@ -2925,76 +2992,26 @@ bool probeDoubleClickReset(std::string& detail)
     return fail("expression label wrong");
   _sliders[@(kTagSpecExpr)].doubleValue = 0.0;
   [self paramChanged:_sliders[@(kTagSpecExpr)]];
-  _sliders[@(kTagSpecSpeed)].doubleValue = 80.0;
-  [self paramChanged:_sliders[@(kTagSpecSpeed)]];
-  if (std::fabs(_spec.speed() - 0.8f) > 1e-6f)
-    return fail("speed did not reach router");
-  _sliders[@(kTagSpecSens)].doubleValue = 40.0;
-  [self paramChanged:_sliders[@(kTagSpecSens)]];
-  if (std::fabs(_spec.sensitivity() - 0.4f) > 1e-6f)
-    return fail("sensitivity did not reach router");
   _sliders[@(kTagSpecMix)].doubleValue = 50.0;
   [self paramChanged:_sliders[@(kTagSpecMix)]];
   if (std::fabs(_spec.mix01() - 0.5f) > 1e-6f)
     return fail("mix did not reach router");
-  _sliders[@(kTagSpecSpeed)].doubleValue = 60.0;
-  [self paramChanged:_sliders[@(kTagSpecSpeed)]];
-  _sliders[@(kTagSpecSens)].doubleValue = 60.0;
-  [self paramChanged:_sliders[@(kTagSpecSens)]];
   _sliders[@(kTagSpecMix)].doubleValue = 100.0;
   [self paramChanged:_sliders[@(kTagSpecMix)]];
-  _sliders[@(kTagSpecToeRise)].doubleValue = 250.0;
-  [self paramChanged:_sliders[@(kTagSpecToeRise)]];
-  if (_spec.toeRiseMs() != 250.0f)
-    return fail("toe rise did not reach router");
-  _sliders[@(kTagSpecToeRet)].doubleValue = 120.0;
-  [self paramChanged:_sliders[@(kTagSpecToeRet)]];
-  if (_spec.toeReturnMs() != 120.0f)
-    return fail("toe return did not reach router");
-  _sliders[@(kTagSpecDiveDepth)].doubleValue = 6.0;
-  [self paramChanged:_sliders[@(kTagSpecDiveDepth)]];
-  if (_spec.diveDepthSt() != 6.0f)
-    return fail("dive depth did not reach router");
-  [self refreshValueLabels:_engine->rig().params()];
-  if (![_valueLabels[@(kTagSpecDiveDepth)].stringValue isEqualToString:@"-6.0 st"])
-    return fail("dive depth label wrong");
-  _sliders[@(kTagSpecDiveTime)].doubleValue = 400.0;
-  [self paramChanged:_sliders[@(kTagSpecDiveTime)]];
-  if (_spec.diveTimeMs() != 400.0f)
-    return fail("dive time did not reach router");
-  _sliders[@(kTagSpecDiveRet)].doubleValue = 150.0;
-  [self paramChanged:_sliders[@(kTagSpecDiveRet)]];
-  if (_spec.diveReturnMs() != 150.0f)
-    return fail("dive return did not reach router");
-  _sliders[@(kTagSpecToeRise)].doubleValue = 0.0;
-  [self paramChanged:_sliders[@(kTagSpecToeRise)]];
-  _sliders[@(kTagSpecToeRet)].doubleValue = 0.0;
-  [self paramChanged:_sliders[@(kTagSpecToeRet)]];
-  _sliders[@(kTagSpecDiveDepth)].doubleValue = 12.0;
-  [self paramChanged:_sliders[@(kTagSpecDiveDepth)]];
-  _sliders[@(kTagSpecDiveTime)].doubleValue = 300.0;
-  [self paramChanged:_sliders[@(kTagSpecDiveTime)]];
-  _sliders[@(kTagSpecDiveRet)].doubleValue = 200.0;
-  [self paramChanged:_sliders[@(kTagSpecDiveRet)]];
-  // Selectors reach the router (voice + control + insert).
-  if ([_specVoiceSeg segmentCount] != 4 || [_specControlSeg segmentCount] != 2
-      || [_specInsertSeg segmentCount] != 2)
+  // Selectors reach the router (5 voices + insert).
+  if ([_specVoiceSeg segmentCount] != 5 || [_specInsertSeg segmentCount] != 2)
     return fail("selector segment counts wrong");
-  for (NSInteger seg = 0; seg < 4; ++seg)
+  for (NSInteger seg = 0; seg < 5; ++seg)
   {
     _specVoiceSeg.selectedSegment = seg;
     [self specVoiceSelected:_specVoiceSeg];
-    const Voice want =
-        seg == 1 ? Voice::Dual : seg == 2 ? Voice::Ring : seg == 3 ? Voice::Detune : Voice::Whammy;
+    const Voice want = seg == 1   ? Voice::WhamDown
+        : seg == 2                ? Voice::Dual
+        : seg == 3                ? Voice::Ring
+        : seg == 4                ? Voice::Detune
+                                  : Voice::WhamUp;
     if (_spec.voice() != want)
       return fail("voice did not reach router");
-  }
-  for (NSInteger seg = 0; seg < 2; ++seg)
-  {
-    _specControlSeg.selectedSegment = seg;
-    [self specControlSelected:_specControlSeg];
-    if (_spec.control() != (seg == 1 ? Control::Envelope : Control::Manual))
-      return fail("control did not reach router");
   }
   for (NSInteger seg = 0; seg < 2; ++seg)
   {
@@ -3005,24 +3022,89 @@ bool probeDoubleClickReset(std::string& detail)
   }
   _specVoiceSeg.selectedSegment = 0;
   [self specVoiceSelected:_specVoiceSeg];
-  _specControlSeg.selectedSegment = 0;
-  [self specControlSelected:_specControlSeg];
   _specInsertSeg.selectedSegment = 0;
   [self specInsertSelected:_specInsertSeg];
-  // Momentary Toe toggles the trigger atomic down/up.
-  [self specToeDown:nil];
-  if (!_spec.trigger())
-    return fail("toe down lost");
-  [self specToeUp:nil];
-  if (_spec.trigger())
-    return fail("toe up lost");
-  // Momentary Dive toggles the dive atomic down/up.
-  [self specDiveDown:nil];
-  if (!_spec.dive())
-    return fail("dive down lost");
-  [self specDiveUp:nil];
-  if (_spec.dive())
-    return fail("dive up lost");
+  // Popup selects slots; fields refresh per slot (Slow Dive factory).
+  [_specGestPopup selectItemAtIndex:1];
+  [self specGestPopupSelected:_specGestPopup];
+  if (_sliders[@(kTagGestTime)].doubleValue != 600.0
+      || _sliders[@(kTagGestDepth)].doubleValue != 12.0
+      || _specGestEffectSeg.selectedSegment != 1 || _specGestDirSeg.selectedSegment != 1
+      || _specGestMotionSeg.selectedSegment != 0
+      || ![_specGestName.stringValue isEqualToString:@"Slow Dive"])
+    return fail("slot 1 fields wrong");
+  if (((TdmResetSlider*)_sliders[@(kTagGestTime)]).resetValue != 600.0)
+    return fail("per-slot double-click reset wrong");
+  [_specGestPopup selectItemAtIndex:0];
+  [self specGestPopupSelected:_specGestPopup];
+  // Staging: field edits do NOT touch router atomics until Save.
+  [_specGestPopup selectItemAtIndex:2];
+  [self specGestPopupSelected:_specGestPopup];
+  _sliders[@(kTagGestDepth)].doubleValue = 6.0;
+  [self paramChanged:_sliders[@(kTagGestDepth)]];
+  _sliders[@(kTagGestTime)].doubleValue = 111.0;
+  [self paramChanged:_sliders[@(kTagGestTime)]];
+  [self refreshValueLabels:_engine->rig().params()];
+  if (![_valueLabels[@(kTagGestDepth)].stringValue isEqualToString:@"6.0 st"])
+    return fail("gesture depth label wrong");
+  if (_spec.slotDepthSt(2) != 12.0f || _spec.slotTimeMs(2) != 400.0f)
+    return fail("staging leaked to router");
+  _specGestName.stringValue = @"Probe Dive";
+  [self specGestSave:nil];
+  if (_spec.slotDepthSt(2) != 6.0f || _spec.slotTimeMs(2) != 111.0f)
+    return fail("save did not commit slot");
+  if (![[_specGestPopup itemAtIndex:2].title isEqualToString:@"3: Probe Dive"])
+    return fail("save did not rename popup");
+  if (_spec.slotTimeMs(1) != 600.0f)
+    return fail("save touched another slot");
+  [self specGestReset:nil];
+  if (_spec.slotDepthSt(2) != 12.0f || _spec.slotTimeMs(2) != 400.0f
+      || _sliders[@(kTagGestTime)].doubleValue != 400.0
+      || ![_specGestName.stringValue isEqualToString:@"Reverse Dive"])
+    return fail("reset did not restore factory");
+  [_specGestPopup selectItemAtIndex:0];
+  [self specGestPopupSelected:_specGestPopup];
+  // Momentary TRIGGER: down activates the displayed slot, up releases.
+  // (Enabled, like hardware: an Off tap never runs its engine, so ramps
+  // only advance while live — the legacy live_ behavior.)
+  _engine->rig().reset(48000.0, 512);
+  _specCheck.state = NSControlStateValueOn;
+  [self specToggled:_specCheck];
+  std::vector<float> tick(512, 0.1f);
+  [self specGestDown:nil];
+  _spec.preTap().process(tick.data(), tick.data(), 512);
+  if (!_spec.preGestureActive())
+    return fail("trigger down lost");
+  [self specGestUp:nil];
+  for (int k = 0; k < 12; ++k) // slot 0 return 100 ms needs 4800+ samples
+    _spec.preTap().process(tick.data(), tick.data(), 512);
+  if (_spec.preGestureActive())
+    return fail("trigger up lost");
+  // External trigger bypasses the displayed slot: popup shows 0, but a
+  // direct slot-5 command adopts slot 5's (slow) rate, provable from the
+  // displacement after one block (slot 0's 50 ms would read ~0.21).
+  _spec.setSlotTimeMs(5, 800.0f);
+  _spec.pressSlot(5);
+  _spec.preTap().process(tick.data(), tick.data(), 512);
+  if (!_spec.preGestureActive() || _spec.preGestureDisp() > 0.05f)
+    return fail("external trigger used wrong slot");
+  _spec.releaseSlot(5);
+  for (int k = 0; k < 20; ++k)
+    _spec.preTap().process(tick.data(), tick.data(), 512);
+  if (_spec.preGestureActive())
+    return fail("external release stuck");
+  _spec.resetSlot(5);
+  // One-shot: activates, then auto-releases with no up command.
+  [self specGestOneShot:nil];
+  _spec.preTap().process(tick.data(), tick.data(), 512);
+  if (!_spec.preGestureActive())
+    return fail("one-shot did not fire");
+  for (int k = 0; k < 40; ++k)
+    _spec.preTap().process(tick.data(), tick.data(), 512);
+  if (_spec.preGestureActive())
+    return fail("one-shot stuck");
+  _specCheck.state = NSControlStateValueOff;
+  [self specToggled:_specCheck];
   // Transparency: installed-but-off renders bit-identical to no seams.
   _engine->rig().reset(48000.0, 512);
   const int n = 512 * 16; // block-aligned: no ragged tail reads
@@ -3072,14 +3154,14 @@ bool probeDoubleClickReset(std::string& detail)
     float* bo[1] = {atkDry.data() + b * 512};
     _engine->rig().processBlock(bi, 1, bo, 1, 512);
   }
-  // Enabled voices render at toe (manual) for both inserts.
+  // Enabled voices render at toe for both inserts (all five).
   _sliders[@(kTagSpecExpr)].doubleValue = 100.0;
   [self paramChanged:_sliders[@(kTagSpecExpr)]];
   for (NSInteger ins = 0; ins < 2; ++ins)
   {
     _specInsertSeg.selectedSegment = ins;
     [self specInsertSelected:_specInsertSeg];
-    for (NSInteger seg = 0; seg < 4; ++seg)
+    for (NSInteger seg = 0; seg < 5; ++seg)
     {
       _specVoiceSeg.selectedSegment = seg;
       [self specVoiceSelected:_specVoiceSeg];
@@ -3101,39 +3183,19 @@ bool probeDoubleClickReset(std::string& detail)
         return fail("voice non-finite");
     }
   }
-  // Envelope mode: the follower responds to the pips (pre-tap telemetry).
-  _specControlSeg.selectedSegment = 1;
-  [self specControlSelected:_specControlSeg];
+  // Slow Dive (slot 1) through the real trigger: held dive renders
+  // (whamup, heel) and releases; telemetry tracks the displacement.
   _specInsertSeg.selectedSegment = 0;
   [self specInsertSelected:_specInsertSeg];
   _specVoiceSeg.selectedSegment = 0;
   [self specVoiceSelected:_specVoiceSeg];
-  _specCheck.state = NSControlStateValueOn;
-  [self specToggled:_specCheck];
-  {
-    std::vector<float> wet(static_cast<size_t>(na), 0.0f);
-    float posMid = 0.0f;
-    for (int b = 0; b < 96; ++b)
-    {
-      const float* bi[1] = {atk.data() + b * 512};
-      float* bo[1] = {wet.data() + b * 512};
-      _engine->rig().processBlock(bi, 1, bo, 1, 512);
-      if (b == 52) // just after the first pip attack (block ~47)
-        posMid = _spec.preExpressionPos();
-    }
-    if (posMid < 0.2f)
-      return fail("envelope did not respond");
-    if (wet == atkDry)
-      return fail("envelope rendered dry");
-  }
-  // Divebomb: held dive renders (whammy, manual heel) and releases clean.
-  _specControlSeg.selectedSegment = 0;
-  [self specControlSelected:_specControlSeg];
   _sliders[@(kTagSpecExpr)].doubleValue = 0.0;
   [self paramChanged:_sliders[@(kTagSpecExpr)]];
-  _sliders[@(kTagSpecDiveTime)].doubleValue = 50.0;
-  [self paramChanged:_sliders[@(kTagSpecDiveTime)]];
-  [self specDiveDown:nil];
+  [_specGestPopup selectItemAtIndex:1];
+  [self specGestPopupSelected:_specGestPopup];
+  _specCheck.state = NSControlStateValueOn;
+  [self specToggled:_specCheck];
+  [self specGestDown:nil];
   {
     std::vector<float> wet(static_cast<size_t>(na), 0.0f);
     for (int b = 0; b < 96; ++b)
@@ -3149,25 +3211,37 @@ bool probeDoubleClickReset(std::string& detail)
       finite = finite && std::isfinite(v);
     if (!finite)
       return fail("dive non-finite");
+    if (!_spec.preGestureActive() || _spec.preGestureDisp() < 0.9f)
+      return fail("dive telemetry wrong");
   }
-  [self specDiveUp:nil];
-  _sliders[@(kTagSpecDiveTime)].doubleValue = 300.0;
-  [self paramChanged:_sliders[@(kTagSpecDiveTime)]];
+  [self specGestUp:nil];
+  for (int b = 0; b < 40; ++b) // slot 1 return 300 ms needs 14400+ samples
+  {
+    const float* bi[1] = {atk.data() + (b % 96) * 512};
+    float bo[512];
+    float* boPtr[1] = {bo};
+    _engine->rig().processBlock(bi, 1, boPtr, 1, 512);
+  }
+  if (_spec.preGestureActive())
+    return fail("dive release stuck");
+  [_specGestPopup selectItemAtIndex:0];
+  [self specGestPopupSelected:_specGestPopup];
   const tdm::RigParams after = _engine->rig().params();
   if (before.gateEnabled != after.gateEnabled || before.tight != after.tight
       || before.driveEnabled != after.driveEnabled || before.inputTrimDb != after.inputTrimDb)
     return fail("voices touched rig params");
-  // Back to defaults for a clean handoff.
+  // Back to defaults for a clean handoff (slots were saved+reset in
+  // place above, so router atomics are factory; restore the fields too).
   _specCheck.state = NSControlStateValueOff;
   [self specToggled:_specCheck];
   _specVoiceSeg.selectedSegment = 0;
   [self specVoiceSelected:_specVoiceSeg];
-  _specControlSeg.selectedSegment = 0;
-  [self specControlSelected:_specControlSeg];
   _specInsertSeg.selectedSegment = 0;
   [self specInsertSelected:_specInsertSeg];
   _sliders[@(kTagSpecExpr)].doubleValue = 0.0;
   [self paramChanged:_sliders[@(kTagSpecExpr)]];
+  [_specGestPopup selectItemAtIndex:0];
+  [self specGestPopupSelected:_specGestPopup];
   if (![self checkDocGeometry:detail])
     return NO;
   return YES;

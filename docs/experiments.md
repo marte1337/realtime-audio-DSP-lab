@@ -2115,3 +2115,94 @@ envelope+dive) → then Glitch milestone.
   exact-identity idle paths (branch on gest==0) + golden hashes from
   the milestone tree. Proved here, reusable for Glitch later.
 
+---
+
+## Date
+
+2026-10-11
+
+### Module
+
+Pitch Shift consolidation (`dsp/lab/SpecialFx/`; WhamDown voice,
+unified gesture engine, envelope removal, PITCH SHIFT UI)
+
+### Hypothesis
+
+The Toe/Dive milestone (`3b59005`) can be generalized into 8
+independent gesture slots (To/From Depth, any supported effect) plus a
+continuous WhamDown creative voice, with envelope control deleted, and
+the accepted Whammy/Ring/Toe sound preserved BIT-EXACTLY (goldens) —
+all as preparation for FCB1010 MIDI control (next milestone).
+
+### Implementation
+
+`SpecGesture.h` (new): slot configs, 8 factory slots, depth-target
+math (no DSP). `SpecLaser`: +WhamDown voice on the V3 down leg;
+gesture legs V4(up)/V5(down)/R2(ring) parked at unity and primed every
+sample; same-voice gestures override expression (legacy Toe shape),
+cross-voice gestures crossfade to the gesture legs (legacy Dive
+shape); From-Depth engages AT depth behind a 10 ms fade and converges
+to live normal; newest trigger wins, stale gestures never revive;
+Detune presses ignored. Envelope follower + Control/Speed/Sensitivity
+deleted from engine, router (`DevSpecFx`: 8 slot atomic banks +
+gen-counter press/release/oneShot by stable slot ID), UI, tests, and
+study. DEV app: one PITCH SHIFT group (Transpose in place + Creative
+Pitch + Performance Gestures with staged Save/Reset, trigger-commits,
+per-slot double-click resets); DSP routing untouched.
+
+### Audition setup
+
+Offline: 5 goldens vs `6113f3b` bit-identical; 2729/0 full suite;
+study renders + CPU in `/tmp/spec_renders2`. Hardware: pending (see
+report for the gesture audition order).
+
+### Expected behavior
+
+Defaults = accepted milestone sound exactly. Fast Toe = legacy stab.
+Slow Dive from heel = legacy dive bit-exactly. Reverse Dive/Toe start
+AT depth and sweep home. Ring Sweep crossfades any voice toward a
+rising carrier. WhamDown expression = continuous 0..−12 dive side.
+
+### Listening result
+
+NOT YET AUDITIONED (refactor is new; Whammy/Ring/Toe were accepted
+before and are golden-pinned).
+
+### Problems
+
+- First cut anchored ALL gesture positions at the live base: Path X
+  To-Depth from a raised base then offsets by the base (depth-0 dives
+  to −6 st instead of dry). Fixed: Path X To sweeps heel→target
+  absolutely (legacy dive); anchoring kept for Path E + From.
+- From-Depth faster than ~150 ms never prints its depth (30 ms doppler
+  slew vs the sweep decay race). Physics, not a bug: Reverse Toe 250
+  peaks ≈ +8–9 st. Slow From gestures for full-depth prints.
+- Gain-glide float stall (~7e-6 near 1.0) breaks bit-exact tails
+  after mix excursions. Fixing the snap changes the voice-select
+  transient the goldens pin — so legacy behavior is KEPT (documented
+  in `SpecLaser.h`); restore tests use near-exact bounds.
+- UI probe triggered while disabled: Off taps never run their engine,
+  so ramps freeze (legacy live_ behavior). Probe enables first, like
+  hardware. No engine change.
+- /tmp TONE3000/JUCE checkouts gutted again by tmp cleanup; re-cloned
+  (TONE3000 @ b8461cc, JUCE 9.0.3 shallow). Environmental, recurring.
+
+### Next step
+
+Hardware gesture audition (report §order) → CoreMIDI + FCB1010
+integration against the slot-ID command API → Glitch milestone.
+
+### Transferable learning
+
+- Gen-counter event commands over relaxed atomics (slot/op/gen pack)
+  give MIDI-shaped press/release/one-shot semantics with no locks and
+  no torn commands; per-consumer gen state delivers to N engines.
+  Reusable for any future UI→audio event (MIDI learn, DAW automation).
+- Bit-exact refactor validation: keep golden hashes from the
+  pre-refactor tree and require them green BEFORE tuning anything new;
+  they caught both the anchoring bug (via behavior tests around them)
+  and the glide-snap temptation (reverted to preserve them).
+- Deleting a whole control dimension (envelope) is safe when tests
+  enumerate its surface: engine/router/UI/study/probe references all
+  surfaced as compile errors or explicit test rewrites, none silent.
+
