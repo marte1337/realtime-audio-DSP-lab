@@ -2206,3 +2206,184 @@ integration against the slot-ID command API → Glitch milestone.
   enumerate its surface: engine/router/UI/study/probe references all
   surfaced as compile errors or explicit test rewrites, none silent.
 
+
+## Date
+
+2026-10-19
+
+### Module
+
+Pitch Shift hardware-audition refinements (`dsp/lab/SpecialFx/`;
+unified Whammy + Direction, DualWham v1, Detune removal,
+independent Expression/Gesture enables, 3-section UI)
+
+### Hypothesis
+
+The refactor checkpoint (`49231ac`) can be simplified per hardware
+feedback — one Whammy + Direction instead of two identities, Detune
+deleted, DualWham v1 from the existing Doppler cascade, and three
+independently enableable sections — with the accepted
+Whammy/Ring/Toe sound preserved BIT-EXACTLY (goldens) and no idle
+colour from the pitch stages.
+
+### Implementation
+
+Neutral probe FIRST on the checkpoint tree: Whammy/Dual heels
+bit-dry, Ring heel full AM (by design), Detune heel detuned ±6¢ +
+LFO — the idle-colour culprit, removed rather than repaired.
+`SpecLaser`: unified Whammy (Up = accepted V1, Down = working V3,
+Direction the single source of truth), DualWham (A on V1, B via the
+V2→V3 cascade, skew unaligned v1), dry leg slot 9 + dual
+`normalActive`/`gestAllowed` flags, V6/V7 gesture DualWham-B
+cascade. `DevSpecFx`: `setExpressionEnabled`/`setGesturesEnabled`
+sharing one tap target (either keeps it live, never stacked);
+expression-off parks at heel behind the dry leg. `SpecGesture`:
+`gestureDepthEnd` (pitch voices always target pos 1), gating
+helpers (`exprVoiceUsesDir/Depth`, `gestureVoiceUsesDir`), factory
+re-mapped to unified Whammy. UI: PITCH SHIFT now TRANSPOSE +
+CREATIVE PITCH — EXPRESSION (Effect/Direction/Depth/Expression/Mix/
+Insert) + CREATIVE PITCH — GESTURES (own enable, 8 staged slots);
+per-voice gating disables inapplicable dials. Study: whamdown +
+dualwham sweeps (pre + post A/B), dualwham-stab gesture demo, CPU
+per voice.
+
+### Audition setup
+
+Offline: 2764/0 full suite (Whammy/Dual/Ring goldens + toe-press
+MATCH); smoke-test 0 failures (rewritten UI probe incl. gestures
+with Expression off → near-dry return); smoke-ui exit 0; study
+renders + CPU in `/tmp/spec_renders3`. Hardware: pending.
+
+### Expected behavior
+
+Defaults = accepted milestone sound exactly. Expression off +
+Gestures off = transparent. Gestures fire with Expression off
+(press bends, release returns dry). Whammy Direction flips polarity
+with no dead combos. DualWham toe ≈ +11/+23 st, both voices
+audible. Ring unchanged. No Detune anywhere.
+
+### Listening result
+
+NOT YET AUDITIONED (refinements are new; Whammy/Ring/Toe were
+accepted before and are golden-pinned).
+
+### Problems
+
+- Continuous-sweep DualWham oracle failed two ways: doppler spread
+  smears a moving tone across long coherent windows, and coarse
+  scan grids (step 8/15) null ~1 Hz off the true peaks (a 1 s
+  window reads near-zero between grid points). Fixed methodologically:
+  stepped holds at 0.25/0.75 with 2 Hz grids (A 258→356, B 308→584).
+  No DSP change — static toe always read A=420/B=820.
+- Whammy at expr 0.5 reads weak (0.04) in a 1 s coherent window but
+  full-energy (0.24) in 0.1 s windows: slow doppler phase wander,
+  not a level bug. Audibly fine; accepted path untouched.
+- UI probe asserted bit-exact dry return after a gesture with
+  Expression off; the legacy gain-glide float stall (~7e-6) makes
+  it near-exact (-109 dB) instead. Probe uses the same 1e-5 bound
+  the engine tests pin; the snap fix stays reverted for goldens.
+
+### Next step
+
+Hardware audition (unified Whammy feel → DualWham +24 usability →
+gestures with Expression off → heel-neutral check) → CoreMIDI +
+FCB1010 integration against the slot-ID command API → Glitch.
+
+### Transferable learning
+
+- Oracle grids must resolve the peaks they hunt: a coherent window
+  of length T nulls ~1/T off-peak, so grid step and window length
+  are coupled choices — verify grids against known tones (test 7's
+  exact-hit grids) before trusting a peak-pick failure.
+- Settled holds beat moving sweeps for pitch oracles on doppler
+  engines: motion smear is real output character, but it defeats
+  narrow measurement — assert migration between holds, continuity
+  across sweeps, separately.
+- Neutral-first debugging: probing every voice at its idle state
+  BEFORE redesigning found the detune culprit in minutes and
+  justified deletion over repair.
+
+## Date
+
+2026-10-20
+
+### Module
+
+Transpose stacking audit (`TechDeathRig` + `dsp/lab/SpecialFx/`;
+all flavours x Pre/Post x expression/gesture at T = 0/−2/−12)
+
+### Hypothesis
+
+Hardware reports DualWham/Ring "retain nearly the same perceived
+pitch range regardless of Transpose" while Whammy/Dual stack. Either
+a routing inconsistency (some voice bypasses transposed audio) or a
+DSP/perceptual effect. Measurement decides; no code changes before.
+
+### Implementation
+
+No DSP changes. Investigation only: (1) code inspection of
+`TechDeathRig::processBlock` (trim → gate → transpose → specPre →
+drive → nam → ir → specPost → shape → space — BOTH taps downstream
+of transpose, all voices share one engine/input); (2) full-rig probe
+(51 renders: transpose baselines + every voice x insert x control);
+(3) direct-engine ratio-vs-frequency map; (4) blind-prediction test
+of the derived error law. Regression tests added
+(`tests/TestSpecFx.cpp` groups 51–56, renderStack helper).
+
+### Audition setup
+
+Offline only: 220 Hz sine through the real rig (NAM/IR bypassed,
+other stages off). Transpose baselines exact (220/196/110 Hz).
+
+### Expected behavior
+
+All voices receive transposed audio and move with it (Ring:
+sidebands 2000 ± f, carrier fixed by design).
+
+### Listening result
+
+NOT APPLICABLE (offline audit; the hardware report is the input,
+not the verdict — the verdict is measurement).
+
+### Problems
+
+- DualWham B moves only ~0.4 st for a −2 st transpose move (820 →
+  796 Hz) while Whammy moves ~1 st (420 → 396) — CONFIRMED
+  perceptually real, but NOT a routing bug. Root cause: the
+  Doppler wrap-slip error depends on input frequency (law above,
+  8/8 predictions hit), partially compensating transpose moves;
+  the V2→V3 cascade compounds it. Shared with accepted Whammy.
+- Ring sidebands track transpose to the Hz at all settings
+  (1780/2220 → 1804/2196 → 1890/2110); "sameness" is the fixed
+  2000 Hz carrier dominating perception. Expected physics.
+- At T=−12 (110 Hz in), ALL Doppler voices degrade together
+  (weak/smeared, mag ~0.04–0.08 vs ~0.2–0.4): low-frequency
+  Doppler limit, consistent across voices — not a stacking
+  inconsistency. Documented as a known limitation; tests pin
+  processing + safety there, not pitch.
+- No routing change made: reordering would be wrong (routing is
+  correct), and "fixing" the Doppler (pitch-sync stagger) would
+  change the accepted Whammy sound. Regression tests pin the
+  measured stacking bands + directions instead; a temporary
+  pre-transpose tap mutation produced 19 failures in groups
+  52–56, then was reverted (tree verified clean of it).
+
+### Next step
+
+Hardware re-audition with this context: DualWham WILL track
+transpose weakly by engine physics (B ≈ 0.2 st per st); decide
+whether that is musically acceptable for v1 or motivates a
+pitch-sync-stagger experiment (separate milestone — it retunes
+the accepted Whammy too).
+
+### Transferable learning
+
+- Blind-predict, then measure: fitting an error law on 6 points
+  and hitting 2 unseen frequencies to 0.1 Hz turned a "maybe
+  peak-pulling?" suspicion into a confirmed mechanism in minutes.
+- Exact-sideband voices (Ring) make ideal routing tracers: any
+  tap-order break would move sidebands by semitones, so Hz-exact
+  tracking PROVES the audio path.
+- Mutation-check new regression tests: 19 intentional failures on
+  a temporary reorder proved the stacking bands bite before the
+  revert restored green.

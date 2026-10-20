@@ -4,13 +4,23 @@
 // dsp/lab/SpecialFx). Two SpecLaser engines sit at the rig's pre-gain and
 // post-IR taps; exactly ONE tap is wet at a time (insert A/B) while the
 // other stays primed via history preroll, so position comparison is
-// instant and click-free. Shared atomic params (voice, expression, mix,
-// insert) plus the gesture slots are pushed to both engines per block;
-// per-tap macros dip through dry on enable, voice, and insert changes
-// (64 down / 5 ms up), with a 50 ms history preroll at each dip bottom
-// so no 0->signal edge re-emerges (DevAlien lesson). Engines that reach
-// macro 0 stop processing (live_ flag) but their taps keep recording
-// history, so reactivation is seamless.
+// instant and click-free. Shared atomic params (voice, expression
+// direction/depth, expression, mix, insert) plus the gesture slots are
+// pushed to both engines per block; per-tap macros dip through dry on
+// enable, voice, and insert changes (64 down / 5 ms up), with a 50 ms
+// history preroll at each dip bottom so no 0->signal edge re-emerges
+// (DevAlien lesson). Taps at macro 0 stop processing (live_ flag) but
+// keep recording history, so reactivation is seamless.
+//
+// INDEPENDENT SECTIONS: expression and gestures enable separately but
+// share ONE tap target (either on keeps the tap live — no stacked
+// engines, no double processing, one Pre/Post insert for both).
+// Expression-off parks the normal legs at unity behind a dry leg, so
+// the selected voice can never colour the idle signal — while gestures
+// still fire (dry base -> depth -> dry). Expression-on renders the
+// voice maps; gestures override and return to the live base. Switching
+// the expression section mid-gesture morphs gains over ~5 ms (bounded,
+// no dip needed); switching gestures off mid-hold gracefully releases.
 //
 // GESTURE SLOTS (MIDI-ready): 8 independent slots, each a full gesture
 // config (voice/dir/depth/motion/time/return) in relaxed atomics, edited
@@ -68,8 +78,14 @@ public:
   SpecInsert& postTap() { return postTap_; }
 
   // --- UI thread (also safe pre-start) ---
-  void setEnabled(bool e) { enabled_.store(e, std::memory_order_relaxed); }
+  void setExpressionEnabled(bool e) { exprEnabled_.store(e, std::memory_order_relaxed); }
+  void setGesturesEnabled(bool e) { gestEnabled_.store(e, std::memory_order_relaxed); }
   void setVoice(Voice v) { voice_.store(static_cast<int>(v), std::memory_order_relaxed); }
+  void setExprDirection(GestureDir d)
+  {
+    exprDir_.store(d == GestureDir::Down ? 1 : 0, std::memory_order_relaxed);
+  }
+  void setExprDepth(float st) { exprDepth_.store(st, std::memory_order_relaxed); } // eng clamps
   void setExpression(float v) { expression_.store(clamp01(v), std::memory_order_relaxed); }
   void setMix(float v) { mix_.store(clamp01(v), std::memory_order_relaxed); }
   void setInsert(Insert i) { insert_.store(static_cast<int>(i), std::memory_order_relaxed); }
@@ -121,8 +137,14 @@ public:
   void releaseSlot(int slot) { pushCmd(slot, 2); }
   void oneShotSlot(int slot) { pushCmd(slot, 3); }
 
-  bool isEnabled() const { return enabled_.load(std::memory_order_relaxed); }
+  bool isExpressionEnabled() const { return exprEnabled_.load(std::memory_order_relaxed); }
+  bool isGesturesEnabled() const { return gestEnabled_.load(std::memory_order_relaxed); }
   Voice voice() const { return loadVoice(); }
+  GestureDir exprDirection() const
+  {
+    return (exprDir_.load(std::memory_order_relaxed) == 1) ? GestureDir::Down : GestureDir::Up;
+  }
+  float exprDepth() const { return exprDepth_.load(std::memory_order_relaxed); }
   Insert insert() const
   {
     return (insert_.load(std::memory_order_relaxed) == 1) ? Insert::Post : Insert::Pre;
@@ -132,7 +154,7 @@ public:
   Voice slotVoice(int slot) const
   {
     return validSlot(slot) ? intToVoice(slotVoice_[slot].load(std::memory_order_relaxed))
-                           : Voice::WhamUp;
+                           : Voice::Whammy;
   }
   GestureDir slotDir(int slot) const
   {
@@ -184,11 +206,13 @@ private:
 
   static Voice intToVoice(int v)
   {
-    return (v == 1) ? Voice::Dual
-        : (v == 2)   ? Voice::Ring
-        : (v == 3)   ? Voice::Detune
-        : (v == 4)   ? Voice::WhamDown
-                     : Voice::WhamUp;
+    if (v == 1)
+      return Voice::Dual;
+    if (v == 2)
+      return Voice::Ring;
+    if (v == 3)
+      return Voice::DualWham;
+    return Voice::Whammy; // 0 + unknown ids (safe default)
   }
 
   Voice loadVoice() const { return intToVoice(voice_.load(std::memory_order_relaxed)); }
@@ -219,7 +243,7 @@ private:
     Phase phase = Off;
     float m = 0.0f;
     bool live = false;
-    Voice appliedVoice = Voice::WhamUp;
+    Voice appliedVoice = Voice::Whammy;
     unsigned adoptedGen = 0; // per-tap: BOTH engines see every command
     std::vector<float> hist;
     int hw = 0, hcount = 0;
@@ -264,8 +288,18 @@ private:
 
   void adopt(SpecLaser& e, TapState& st)
   {
+    const bool exprEn = exprEnabled_.load(std::memory_order_relaxed);
+    const bool gestEn = gestEnabled_.load(std::memory_order_relaxed);
     e.setVoice(loadVoice());
+    e.setExprDirection(exprDirection());
+    e.setExprDepth(exprDepth_.load(std::memory_order_relaxed));
     e.setExpression(expression_.load(std::memory_order_relaxed));
+    e.setNormalActive(exprEn);
+    e.setGestAllowed(gestEn);
+    // Gestures off mid-hold releases gracefully (no stuck states); the
+    // release call is idempotent once the gesture reaches Idle.
+    if (!gestEn && e.gestureActive())
+      e.releaseGesture(e.gestureSlot());
     // Active-slot config adopts every block (live edits reshape a held
     // gesture); the gen-guarded command applies press/release/one-shot.
     e.setGestureConfig(readSlot(cmdSlot_));
@@ -297,10 +331,13 @@ private:
     SpecLaser& e = engine(tap.isPre_);
     TapState& st = tap.st_;
     adopt(e, st); // setVoice retargets gains; the dip below masks the move
-    const bool en = enabled_.load(std::memory_order_relaxed);
+    const bool exprEn = exprEnabled_.load(std::memory_order_relaxed);
+    const bool gestEn = gestEnabled_.load(std::memory_order_relaxed);
     const bool selected = (insert() == Insert::Pre) == tap.isPre_;
     const float mixTgt = mix_.load(std::memory_order_relaxed);
-    const float target = (en && selected) ? mixTgt : 0.0f;
+    // Shared target: either section keeps the tap live (one engine, one
+    // blend — never stacked). Both off dips to installed-but-off dry.
+    const float target = ((exprEn || gestEn) && selected) ? mixTgt : 0.0f;
     const Voice want = loadVoice();
     if (!st.live)
       st.appliedVoice = want; // idle taps track voice silently
@@ -425,8 +462,11 @@ private:
   SpecLaser pre_, post_;
   Tap preTap_, postTap_;
 
-  std::atomic<bool> enabled_{false};
+  std::atomic<bool> exprEnabled_{false};
+  std::atomic<bool> gestEnabled_{false};
   std::atomic<int> voice_{0};
+  std::atomic<int> exprDir_{0};
+  std::atomic<float> exprDepth_{kMaxGestureDepthSt};
   std::atomic<float> expression_{0.0f};
   std::atomic<float> mix_{1.0f};
   std::atomic<int> insert_{0};

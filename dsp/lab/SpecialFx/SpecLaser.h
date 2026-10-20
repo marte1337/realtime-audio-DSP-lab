@@ -3,14 +3,20 @@
 // SpecLaser: expression-driven Laser engine (LAB, dsp/lab/SpecialFx).
 // Independent take on the reference "laser" concept: one normalized
 // expression position (0..1) drives preset-like per-voice parameter maps
-// (heel/toe endpoints) under performance-gesture control. Five creative
+// (heel/toe endpoints) under performance-gesture control. Four creative
 // voices:
 //
-//   WhamUp:   single pitch voice 0 -> +12 st (classic toe-up octave)
-//   Dual:     contrary-motion pair, V1 0 -> -12 st, V2 0 -> +12 st
-//   Ring:     ring-mod carrier sweep 60 -> 2000 Hz (log)
-//   Detune:   micro-voice chorus, spread + LFO depth from expression
-//   WhamDown: single pitch voice 0 -> -12 st (continuous dive side)
+//   Whammy:  single pitch voice, Direction Up 0 -> +D st (V1, the
+//            accepted classic path) or Down 0 -> -D st (V3 down leg)
+//   Dual:    contrary-motion pair, V1 0 -> -D st, V2 0 -> +D st
+//   Ring:    ring-mod carrier sweep 60 -> 2000 Hz (log, fixed map)
+//   DualWham: experimental upward pair, A 0 -> +D st (V1) + B 0 -> +2D
+//            via a V2 -> V3 Doppler cascade (v1: unaligned, extreme)
+//
+// D = expression Depth (default 12 st; Ring ignores it). Direction is
+// the single source of truth for Whammy polarity (no separate up/down
+// voice identities, no contradictory states); Dual/DualWham spread
+// upward only; Ring is fixed-map (its accepted character).
 //
 // Pitch voices reuse AlienDoppler (masked-wrap variable delay): slope
 // changes only bend the ramp, so expression sweeps are continuous by
@@ -28,42 +34,58 @@
 // here. Ring reuses AlienRing (carrier is NOT smoothed there, so this
 // engine glides it per sample).
 //
+// DualWham B (+24 target) cascades two +12 Doppler stages rather than
+// extending the shared primitive: no silent clamp, no Alien side
+// effects. Cost: B lags A by ~35 ms nominal (moving taps — exact
+// alignment is impossible), double sag, double artifacts. v1 keeps the
+// skew unaligned (extreme character); ears decide if it needs work.
+//
+// NEUTRAL BEHAVIOR (hardware finding, probed on the checkpoint tree):
+// Whammy/Dual heels are bit-exact dry (modulo ~1e-6 gain-glide stall
+// residue, pitch-exact); Ring heel is full 60 Hz AM coloration (its
+// ACCEPTED character, preserved); the old Detune heel detuned
+// (+/-6 cents + LFO wobble) and Detune was REMOVED for it. The
+// structural fix is independent enables: expression-off parks the
+// normal legs at unity and carries a dry leg, so output is bit-dry no
+// matter which voice is selected — while gestures still fire.
+//
 // PERFORMANCE GESTURES (one engine, two paths, no stale state):
 // A gesture config (voice/dir/depth/motion/time/return) drives a
 // displacement ramp d and a mix ramp m. The depth target T is a POSITION
-// in the gesture voice's map (full depth = the map end that sounds like
-// the configured Direction; WhamDown flips because its pos 1 IS
-// pitch-down).
-//   Path E (gesture voice == normal voice): g = max/min(base, d-bound,
-//   T) overrides the normal expression (the legacy Toe shape, BIT-EXACT
-//   at Fast-Toe settings; golden-pinned). Covers Toe, Reverse Toe,
-//   same-voice dives/sweeps. The live-base anchoring means changing
-//   expression mid-gesture and releasing always land on the CURRENT
-//   normal state — never a stored value, never a jump.
-//   Path X (different voice): the normal voice renders the base on the
-//   normal legs (V1/V2/V3/R1) while the gesture voice renders g on
-//   DEDICATED gesture legs (V4 up / V5 down / R2 ring, parked at unity
-//   and primed every sample, so a press retargets from dry — the legacy
-//   Dive shape, bit-exact from heel), crossfaded by m. To-Depth sweeps
-//   heel -> T absolutely; From-Depth anchors at the live base so the
-//   sweep converges exactly to the current normal state.
+// in the gesture voice's map (pitch voices always target pos 1;
+// Whammy polarity comes from Direction selecting the leg).
+//   Path E (gesture == normal-effective: same voice, and same Whammy
+//   direction): g = max/min(base, d-bound, T) overrides the normal
+//   expression (the legacy Toe shape, BIT-EXACT at Fast-Toe settings;
+//   golden-pinned). A Whammy-Down gesture over Whammy-Up normal is
+//   Path X (different legs) — polarity can never cancel silently.
+//   Path X (different effective voice): the normal voice renders the
+//   base on the normal legs (V1/V2/V3/R1) while the gesture voice
+//   renders g on DEDICATED gesture legs (V4 up / V5 down / R2 ring /
+//   V6+V7 DualWham-B cascade, parked at unity and primed every sample,
+//   so a press retargets from dry — the legacy Dive shape, bit-exact
+//   from heel), crossfaded by m. To-Depth sweeps heel -> T absolutely;
+//   From-Depth anchors at the live base so the sweep converges exactly
+//   to the current normal state.
 // To Depth: press sweeps to T over Time, hold, release returns over
 // Return. From Depth: press snaps to T behind a 10 ms engage fade
 // (target snap, slew+fade masked — never a discontinuous DSP direction
 // change), sweeps back to live normal over Time, converging exactly;
 // early release fades out over Return. One-shot auto-releases.
 // Newest trigger wins; routines are per-sample continuous, so
-// interruption/retrigger/early-release can't click. Detune is not a
-// supported gesture voice (press ignored, documented); a normal-voice
-// change mid-gesture re-paths live (the router dip masks it).
+// interruption/retrigger/early-release can't click.
+// Expression-off rendering: base forced to heel, normal gains gated
+// off (except while a Path-E gesture plays the normal legs), dry leg
+// carries (1-m). Gesture presses are ignored unless the gesture
+// section allows them (router-owned flag).
 // Gesture slew (musical portamento) is SEPARATE from the 5 ms
 // anti-zipper smoother + doppler 30 ms slew (click prevention), which
 // only round the gesture corners.
 //
 // A doppler leg's target must never change SIGN mid-engagement (the tap
-// mirror jumps ~0.4): gesture legs have fixed sign roles (V4 >= 0,
+// mirror jumps ~0.4): gesture legs have fixed sign roles (V4/V6/V7 >= 0,
 // V5 <= 0), unity parking engages the bypass fade, and normal-leg sign
-// flips only happen behind router dips.
+// flips only happen behind router dips (voice switches).
 //
 // All legs process every sample (normal + gesture stay primed even at
 // zero gain; parked dopplers cost one ring write + early return, so the
@@ -94,11 +116,10 @@ class SpecLaser
 public:
   enum class Voice
   {
-    WhamUp = 0,
+    Whammy = 0,
     Dual = 1,
     Ring = 2,
-    Detune = 3,
-    WhamDown = 4
+    DualWham = 3
   };
 
   void reset(double sampleRate)
@@ -110,25 +131,30 @@ public:
     v3_.reset(sr);
     v4_.reset(sr);
     v5_.reset(sr);
+    v6_.reset(sr);
+    v7_.reset(sr);
     ring_.reset(sr);
     ring_.setMix(1.0f);
     ring2_.reset(sr);
     ring2_.setMix(1.0f);
-    lfo_.reset(sr, 1.0f);
     pos_.reset(sr, 5.0f, 0.0f);
     pos_.snap(0.0f);
     carrier_.reset(sr, 5.0f, kRingHeelHz);
     carrier_.snap(kRingHeelHz);
     carrier2_.reset(sr, 5.0f, kRingHeelHz);
     carrier2_.snap(kRingHeelHz);
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < 10; ++i)
     {
       gain_[i] = 0.0f;
       gainTgt_[i] = 0.0f;
     }
     applyVoiceGains();
-    for (int i = 0; i < 8; ++i)
-      gain_[i] = (i < 5) ? gainTgt_[i] : 0.0f;
+    for (int i = 0; i < 10; ++i)
+      gain_[i] = (i < 4) ? gainTgt_[i] : 0.0f;
+    exprDir_ = GestureDir::Up;
+    exprDepth_ = kMaxGestureDepthSt;
+    normalActive_ = true;
+    gestAllowed_ = true;
     disarm();
     setGestureConfig(defaultGestureConfig(0)); // Fast Toe shape
     updateGestSteps();
@@ -145,8 +171,11 @@ public:
     v3_.clear();
     v4_.clear();
     v5_.clear();
+    v6_.clear();
+    v7_.clear();
+    pathE_ = pathE();
     pos_.snap(posTarget());
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < 10; ++i)
       gain_[i] = effGainTgt(i); // snap incl. live gesture (macro is 0 here)
   }
 
@@ -156,35 +185,51 @@ public:
     applyVoiceGains();
   }
   void setExpression(float e) { manual_ = clamp01(e); }
+  void setExprDirection(GestureDir d)
+  {
+    exprDir_ = d;
+    applyVoiceGains(); // Whammy polarity reselects its leg
+  }
+  void setExprDepth(float st)
+  {
+    exprDepth_ = (st < 0.0f) ? 0.0f : ((st > kMaxGestureDepthSt) ? kMaxGestureDepthSt : st);
+  }
+  void setNormalActive(bool a) { normalActive_ = a; } // expression section enable
+  void setGestAllowed(bool a) { gestAllowed_ = a; }   // gesture section enable
 
   // Gesture config: pushed per block (live edits adopt mid-gesture).
   void setGestureConfig(const GestureConfig& c)
   {
     cfgVoice_ = c.voice;
+    cfgDir_ = c.dir;
     cfgMotion_ = c.motion;
-    cfgEnd_ = gestureDepthEnd(c.voice == static_cast<int>(Voice::WhamDown), c.dir);
+    cfgEnd_ = gestureDepthEnd(c.voice, c.dir);
     cfgTgt_ = gestureTargetPos(cfgEnd_, c.depthSt);
     cfgTimeMs_ = clampMs(c.timeMs);
     cfgRetMs_ = clampMs(c.retMs);
-    gestGainTgt_[0] = gestGainTgt_[1] = gestGainTgt_[2] = 0.0f;
-    if (c.voice == static_cast<int>(Voice::WhamUp))
-      gestGainTgt_[0] = 1.0f;
-    else if (c.voice == static_cast<int>(Voice::WhamDown))
-      gestGainTgt_[1] = 1.0f;
-    else if (c.voice == static_cast<int>(Voice::Dual))
+    gestGainTgt_[0] = gestGainTgt_[1] = gestGainTgt_[2] = gestGainTgt_[3] = gestGainTgt_[4] = 0.0f;
+    if (c.voice == kVoiceWhammy)
+      gestGainTgt_[(c.dir == GestureDir::Up) ? 0 : 1] = 1.0f; // V4 up / V5 down
+    else if (c.voice == kVoiceDual)
     {
       gestGainTgt_[0] = 0.5f;
       gestGainTgt_[1] = 0.5f;
     }
-    else if (c.voice == static_cast<int>(Voice::Ring))
+    else if (c.voice == kVoiceRing)
       gestGainTgt_[2] = 1.0f;
+    else if (c.voice == kVoiceDualWham)
+    {
+      gestGainTgt_[0] = 0.5f; // A on V4, B via the V6 -> V7 cascade
+      gestGainTgt_[4] = 0.5f;
+    }
     updateGestSteps();
   }
   // Gesture commands (block boundary, by stable slot ID; newest wins).
-  // Detune/unknown voices are ignored (unsupported, documented).
+  // Unknown voice ids are ignored (unsupported, documented); presses
+  // while the gesture section is off are ignored (no-op, stays dry).
   void pressGesture(int slot)
   {
-    if (!validGestVoice(cfgVoice_))
+    if (!gestAllowed_ || !validGestVoice(cfgVoice_))
       return;
     activeSlot_ = slot;
     oneShot_ = false;
@@ -223,57 +268,53 @@ public:
       x = 0.0f;
 
     advanceGesture(); // d/m ramps (no-op when idle)
+    pathE_ = pathE();
     // Path X (cross-voice): normal renders the base, gesture renders g
     // on the dedicated legs, crossfaded by the EFFECTIVE mix (gated by
     // path so Path E never touches the mix). Path changes only on voice
     // switches, which the router dip masks.
-    const bool pathX = (phase_ != Phase::Idle) && (cfgVoice_ != static_cast<int>(voice_));
+    const bool pathX = (phase_ != Phase::Idle) && !pathE_;
     const float mix = pathX ? gestM_ : 0.0f;
 
     const float pos = pos_.next(); // 5 ms smoothed, exact settle
     pos_.setTarget(posTarget());
 
     // Per-voice maps from expression (normal legs; gesture legs below).
-    const float st1 = 12.0f * pos;  // whammy toe-up octave
-    const float stD1 = -12.0f * pos; // dual contrary pair
-    const float stD2 = 12.0f * pos;
-    float n1 = 0.0f, n2 = 0.0f;
-    if (voice_ == Voice::WhamUp)
-      n1 = st1;
+    const float st1 = exprDepth_ * pos;   // up map (+D)
+    const float stD1 = -exprDepth_ * pos; // down map (-D)
+    const float stD2 = exprDepth_ * pos;  // second up map (+D)
+    float n1 = 0.0f, n2 = 0.0f, n3 = 0.0f;
+    if (voice_ == Voice::Whammy)
+    {
+      if (exprDir_ == GestureDir::Up)
+        n1 = st1; // accepted classic path (V1)
+      else
+        n3 = stD1; // working downward path (V3)
+    }
     else if (voice_ == Voice::Dual)
     {
       n1 = stD1;
       n2 = stD2;
     }
-    else if (voice_ == Voice::Detune)
+    else if (voice_ == Voice::DualWham)
     {
-      // Chorus: symmetric micro-voices around a spread center, LFO in
-      // opposite phase. Heel = subtle doubling, toe = wide wobble.
-      const float rate = 0.15f * std::pow(4.0f / 0.15f, pos); // 0.15..4 Hz log
-      lfo_.setFreq(rate);
-      float s, c;
-      lfo_.next(s, c);
-      (void)c;
-      const float center = (6.0f + 18.0f * pos) / 100.0f; // cents -> st
-      const float dev = (2.0f + 28.0f * pos) / 100.0f;
-      n1 = center + s * dev;
-      n2 = -(center + s * dev);
+      n1 = st1;  // A: +D on V1
+      n2 = stD2; // B: +D cascade stages on V2 -> V3 (B input routed below)
+      n3 = stD2;
     }
-    // else Ring/WhamDown: V1/V2 park at unity (bit-exact dry legs)
+    // else Ring voice: dopplers park at unity (bit-exact dry legs)
     v1_.setSemitones(n1);
     v2_.setSemitones(n2);
-    // V3: the dedicated downward leg, now expression-driven for the
-    // WhamDown voice (monotonic 0 -> -12 map, unity-parked otherwise).
-    v3_.setSemitones(voice_ == Voice::WhamDown ? -12.0f * pos : 0.0f);
+    v3_.setSemitones(n3);
     // Gesture legs (Path X): the SAME maps at the gesture position g
-    // (depth lives in the target, so signs stay fixed: V4 >= 0, V5 <= 0
-    // — no mid-engagement sign flips, ever). Parked at unity otherwise.
-    // Path X To sweeps heel -> target absolutely (the legacy dive shape:
-    // depth 0 crossfades to dry); Path E and Path X From anchor at the
-    // live base (override / converge semantics).
+    // (depth lives in the target, so signs stay fixed: V4/V6/V7 >= 0,
+    // V5 <= 0 — no mid-engagement sign flips, ever). Parked at unity
+    // otherwise.
     const float g = gestPos(pathX);
     v4_.setSemitones(pathX ? 12.0f * g : 0.0f);
     v5_.setSemitones(pathX ? -12.0f * g : 0.0f);
+    v6_.setSemitones(pathX ? 12.0f * g : 0.0f);
+    v7_.setSemitones(pathX ? 12.0f * g : 0.0f);
     const float fc = kRingHeelHz * std::pow(kRingToeHz / kRingHeelHz, pos); // log sweep
     carrier_.setTarget(fc);
     ring_.setCarrierHz(carrier_.next());
@@ -281,20 +322,24 @@ public:
     carrier2_.setTarget(fc2);
     ring2_.setCarrierHz(carrier2_.next());
 
-    // All legs run (primed); gains crossfade (~5 ms) on select.
-    // Detune rides the doppler legs (slot 3 scales their mean); slots
-    // 5..7 are the gesture legs (exactly 0 when no cross-voice gesture
-    // is active: wet sum exact).
+    // All legs run (primed); gains crossfade (~5 ms) on select. Slots
+    // 0..3 are the normal voice (V3 doubles as DualWham-B stage 2, fed
+    // from V2's output); 4..8 are the gesture legs (V6 -> V7 cascade
+    // for DualWham-B, exactly 0 when no cross-voice gesture is active);
+    // slot 9 is the dry leg (expression-off rendering only).
     const float o1 = v1_.process(x);
     const float o2 = v2_.process(x);
     const float ro = ring_.process(x);
-    const float o3 = v3_.process(x);
+    const float o3 = v3_.process(voice_ == Voice::DualWham ? o2 : x);
     const float o4 = v4_.process(x);
     const float o5 = v5_.process(x);
     const float r2o = ring2_.process(x);
+    const float o6 = v6_.process(x);
+    const float o7 = v7_.process(o6);
     const float wet = glideGain(0, mix) * o1 + glideGain(1, mix) * o2 + glideGain(2, mix) * ro
-        + glideGain(3, mix) * 0.5f * (o1 + o2) + glideGain(4, mix) * o3 + glideGain(5, mix) * o4
-        + glideGain(6, mix) * o5 + glideGain(7, mix) * r2o;
+        + glideGain(3, mix) * o3 + glideGain(4, mix) * o4 + glideGain(5, mix) * o5
+        + glideGain(6, mix) * r2o + glideGain(7, mix) * o6 + glideGain(8, mix) * o7
+        + glideGain(9, mix) * x;
     return std::isfinite(wet) ? wet : x;
   }
 
@@ -314,8 +359,7 @@ private:
 
   static bool validGestVoice(int v)
   {
-    return v == static_cast<int>(Voice::WhamUp) || v == static_cast<int>(Voice::Dual)
-        || v == static_cast<int>(Voice::Ring) || v == static_cast<int>(Voice::WhamDown);
+    return v == kVoiceWhammy || v == kVoiceDual || v == kVoiceRing || v == kVoiceDualWham;
   }
 
   void disarm()
@@ -364,6 +408,20 @@ private:
     }
   }
 
+  // Effective-voice match: same voice, and for Whammy the same polarity
+  // (a Whammy-Down gesture over Whammy-Up normal takes Path X — the legs
+  // differ, so polarity can never cancel silently). Dual/DualWham have
+  // no direction; Ring shares its carrier leg across sweep directions.
+  bool matchesNormal() const
+  {
+    if (cfgVoice_ != static_cast<int>(voice_))
+      return false;
+    return voice_ != Voice::Whammy || cfgDir_ == exprDir_;
+  }
+  bool pathE() const { return phase_ != Phase::Idle && matchesNormal(); }
+
+  float base() const { return normalActive_ ? manual_ : 0.0f; } // expr-off parks at heel
+
   // Gesture position: displacement bound by the depth target. Path E
   // and Path X From anchor at the LIVE base (expression moves under
   // gestures stay continuous; release/converge always land on the
@@ -373,26 +431,28 @@ private:
     if (pathX && cfgMotion_ == GestureMotion::ToDepth)
       return (cfgEnd_ == 1) ? ((gestD_ < cfgTgt_) ? gestD_ : cfgTgt_)
                             : (((1.0f - gestD_) > cfgTgt_) ? (1.0f - gestD_) : cfgTgt_);
+    const float b = base();
     const float gv = (cfgEnd_ == 1) ? ((gestD_ < cfgTgt_) ? gestD_ : cfgTgt_)
                                    : (((1.0f - gestD_) > cfgTgt_) ? (1.0f - gestD_) : cfgTgt_);
-    return (cfgEnd_ == 1) ? ((manual_ > gv) ? manual_ : gv) : ((manual_ < gv) ? manual_ : gv);
+    return (cfgEnd_ == 1) ? ((b > gv) ? b : gv) : ((b < gv) ? b : gv);
   }
 
   float posTarget() const
   {
-    if (phase_ == Phase::Idle || cfgVoice_ != static_cast<int>(voice_))
-      return manual_; // idle, or Path X (normal renders the base)
+    if (phase_ == Phase::Idle || !matchesNormal())
+      return base(); // idle, or Path X (normal renders the base)
     return gestPos(false); // Path E: gesture overrides expression
   }
 
-  // Voice -> [v1, v2, ring, detuneLegs, v3down]; detune sets slot 3 only
-  // (process scales the doppler-leg mean through it). Slots 5..7 are the
-  // gesture legs (voice-independent, driven by the gesture mix).
+  // Voice -> [v1, v2, ring, v3down]; V3 doubles as DualWham-B stage 2
+  // (fed from V2, gain 0.5). Slots 4..8 are the gesture legs
+  // (voice-independent, driven by the gesture mix); slot 9 is the dry
+  // leg (expression-off rendering only, always 0 here).
   void applyVoiceGains()
   {
-    gainTgt_[0] = gainTgt_[1] = gainTgt_[2] = gainTgt_[3] = gainTgt_[4] = 0.0f;
-    if (voice_ == Voice::WhamUp)
-      gainTgt_[0] = 1.0f;
+    gainTgt_[0] = gainTgt_[1] = gainTgt_[2] = gainTgt_[3] = 0.0f;
+    if (voice_ == Voice::Whammy)
+      gainTgt_[(exprDir_ == GestureDir::Up) ? 0 : 3] = 1.0f;
     else if (voice_ == Voice::Dual)
     {
       gainTgt_[0] = 0.5f;
@@ -400,26 +460,33 @@ private:
     }
     else if (voice_ == Voice::Ring)
       gainTgt_[2] = 1.0f;
-    else if (voice_ == Voice::WhamDown)
-      gainTgt_[4] = 1.0f;
-    else
-      gainTgt_[3] = 1.0f; // detune: legs at 0.5 via process mix
+    else // DualWham: A on V1, B via the V2 -> V3 cascade (V2 internal)
+    {
+      gainTgt_[0] = 0.5f;
+      gainTgt_[3] = 0.5f;
+    }
   }
 
-  // Effective gain target: idle mix returns the voice target EXACTLY
-  // (gesture slots contribute 0); held cross-voice gestures scale the
-  // normal voice by (1-m) and the gesture voice by m.
+  // Effective gain target. Normal slots gate on the expression section
+  // (off parks them — except while a Path-E gesture plays the normal
+  // legs); idle+enabled returns the voice target EXACTLY. Gesture slots
+  // scale by the mix (exactly 0 without a cross-voice gesture). The dry
+  // slot carries (1-m) only for expression-off idle/Path-X rendering.
   float effGainTgt(int i, float mix) const
   {
-    if (i >= 5)
-      return (mix == 0.0f) ? 0.0f : mix * gestGainTgt_[i - 5];
+    if (i >= 9)
+      return (normalActive_ || pathE_) ? 0.0f : (1.0f - mix);
+    if (i >= 4)
+      return (mix == 0.0f) ? 0.0f : mix * gestGainTgt_[i - 4];
+    if (!normalActive_ && !pathE_)
+      return 0.0f;
     if (mix == 0.0f)
       return gainTgt_[i];
     return (1.0f - mix) * gainTgt_[i];
   }
   float effGainTgt(int i) const
   {
-    const bool pathX = (phase_ != Phase::Idle) && (cfgVoice_ != static_cast<int>(voice_));
+    const bool pathX = (phase_ != Phase::Idle) && !pathE_;
     return effGainTgt(i, pathX ? gestM_ : 0.0f);
   }
 
@@ -479,27 +546,33 @@ private:
   }
 
   double sr_ = 48000.0;
-  alien::AlienDoppler v1_, v2_, v3_; // v3 = dedicated downward leg (WhamDown)
+  alien::AlienDoppler v1_, v2_, v3_; // v3 = down leg / DualWham-B stage 2
   alien::AlienDoppler v4_, v5_;      // gesture legs: up (>= 0) / down (<= 0)
+  alien::AlienDoppler v6_, v7_;      // gesture DualWham-B cascade (>= 0)
   alien::AlienRing ring_, ring2_;    // normal / gesture ring
-  alien::QuadOsc lfo_;
   alien::SmoothParam pos_, carrier_, carrier2_;
-  Voice voice_ = Voice::WhamUp;
+  Voice voice_ = Voice::Whammy;
+  GestureDir exprDir_ = GestureDir::Up;
+  float exprDepth_ = kMaxGestureDepthSt;
   float manual_ = 0.0f;
+  bool normalActive_ = true; // expression section enable (router-owned)
+  bool gestAllowed_ = true;  // gesture section enable (router-owned)
+  bool pathE_ = false;       // latched per process()/clear()
   // Gesture config (block-boundary adopted) + runtime.
   int cfgVoice_ = 0;
+  GestureDir cfgDir_ = GestureDir::Up;
   GestureMotion cfgMotion_ = GestureMotion::ToDepth;
   int cfgEnd_ = 1;
   float cfgTgt_ = 1.0f, cfgTimeMs_ = 50.0f, cfgRetMs_ = 100.0f;
-  float gestGainTgt_[3] = {1.0f, 0.0f, 0.0f};
+  float gestGainTgt_[5] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
   Phase phase_ = Phase::Idle;
   int activeSlot_ = -1;
   bool oneShot_ = false;
   float gestD_ = 0.0f, gestM_ = 0.0f;
   float timeStep_ = 1.0f, retStep_ = 1.0f, engageStep_ = 1.0f;
   float gainCoef_ = 1.0f;
-  float gain_[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-  float gainTgt_[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  float gain_[10] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  float gainTgt_[10] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 } // namespace specfx

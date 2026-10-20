@@ -11,13 +11,15 @@
 // Time (To Depth) or engages AT the depth and sweeps back toward normal
 // over Time (From Depth); on release it returns to the live expression
 // state over Return. The depth target is a POSITION (0..1) in the
-// gesture voice's map: depthEnd() picks which map end sounds like the
-// configured Direction (WhamDown flips: its pos 1 IS pitch-down), and
-// targetPos() scales it by Depth (semitone magnitude for pitch voices,
-// sweep range for Ring). The engine renders gesture voices with the SAME
-// maps as normal voices, so depth lives entirely in the target. To-Depth
-// across voices sweeps heel -> target absolutely (legacy dive shape);
-// same-voice gestures and From-Depth anchor at the live base.
+// gesture voice's map: pitch voices always target their pos-1 extreme
+// (Whammy polarity comes from Direction, NOT from which map end), while
+// Ring follows Direction (Up = carrier rises to toe, Down = falls to
+// heel); targetPos() scales the target by Depth (semitone magnitude for
+// pitch voices, sweep range for Ring). The engine renders gesture voices
+// with the SAME maps as normal voices, so depth lives entirely in the
+// target. To-Depth across voices sweeps heel -> target absolutely
+// (legacy dive shape); same-voice gestures and From-Depth anchor at the
+// live base.
 
 namespace tdm
 {
@@ -38,7 +40,7 @@ enum class GestureMotion
 
 struct GestureConfig
 {
-  int voice = 0; // SpecLaser::Voice as int (Detune unsupported: ignored)
+  int voice = 0; // SpecLaser::Voice as int (unknown ids ignored)
   GestureDir dir = GestureDir::Up;
   GestureMotion motion = GestureMotion::ToDepth;
   float depthSt = 12.0f; // 0..12 (validated ceiling; UI + engine clamp)
@@ -51,13 +53,37 @@ constexpr float kMaxGestureDepthSt = 12.0f; // validated Doppler ceiling
 constexpr float kMaxGestureMs = 2000.0f;
 constexpr float kGestureEngageMs = 10.0f; // From-Depth press fade (click-safe)
 
-// Which map end (0/1) is the gesture's depth target. WhamDown's pos 1 is
-// its pitch-down extreme, so it flips; Dual Down collapses to unison;
-// Ring follows carrier direction. voiceWhamDown: pass (v == Voice::WhamDown).
-inline int gestureDepthEnd(bool voiceWhamDown, GestureDir dir)
+// Voice ids (SpecLaser::Voice as int): Whammy 0, Dual 1, Ring 2, DualWham 3.
+constexpr int kVoiceWhammy = 0;
+constexpr int kVoiceDual = 1;
+constexpr int kVoiceRing = 2;
+constexpr int kVoiceDualWham = 3;
+
+// Which map end (0/1) is the gesture's depth target. Pitch voices always
+// target pos 1 (Whammy polarity comes from Direction selecting the leg,
+// not the map end; Dual/DualWham spread upward); Ring follows Direction.
+inline int gestureDepthEnd(int voice, GestureDir dir)
 {
-  const bool up = (dir == GestureDir::Up);
-  return ((up != voiceWhamDown) ? 1 : 0);
+  if (voice == kVoiceRing)
+    return (dir == GestureDir::Up) ? 1 : 0;
+  return 1;
+}
+
+// Single source of truth for control gating (UI enable/disable): Whammy
+// expression takes Direction (polarity) + Depth; Dual/DualWham take Depth
+// only (fixed spread/up); Ring expression is fixed-map (its character).
+// Gestures add Direction for Ring (carrier sweep direction).
+inline bool exprVoiceUsesDir(int voice)
+{
+  return voice == kVoiceWhammy;
+}
+inline bool exprVoiceUsesDepth(int voice)
+{
+  return voice != kVoiceRing;
+}
+inline bool gestureVoiceUsesDir(int voice)
+{
+  return voice == kVoiceWhammy || voice == kVoiceRing;
 }
 
 // Depth-scaled target position: full depth reaches the map end, 0 stays
@@ -87,39 +113,39 @@ inline const char* defaultGestureName(int slot)
   }
 }
 
-// Voice ids: SpecLaser::Voice as int (WhamUp 0, Dual 1, Ring 2, Detune 3,
-// WhamDown 4). Detune is not offered (unsupported as a gesture voice).
+// Voice ids: kVoiceWhammy 0, kVoiceDual 1, kVoiceRing 2, kVoiceDualWham 3.
+// Unified Whammy: Direction selects polarity (dives = Whammy + Down).
 inline GestureConfig defaultGestureConfig(int slot)
 {
   GestureConfig c;
   switch (slot)
   {
-  case 0: // Fast Toe: legacy stab (WhamUp/Up/To/12/50/100)
-    c.voice = 0;
+  case 0: // Fast Toe: legacy stab (Whammy/Up/To/12/50/100)
+    c.voice = kVoiceWhammy;
     c.dir = GestureDir::Up;
     c.motion = GestureMotion::ToDepth;
     c.depthSt = 12.0f;
     c.timeMs = 50.0f;
     c.retMs = 100.0f;
     break;
-  case 1: // Slow Dive (WhamDown/Down/To/12/600/300)
-    c.voice = 4;
+  case 1: // Slow Dive (Whammy/Down/To/12/600/300)
+    c.voice = kVoiceWhammy;
     c.dir = GestureDir::Down;
     c.motion = GestureMotion::ToDepth;
     c.depthSt = 12.0f;
     c.timeMs = 600.0f;
     c.retMs = 300.0f;
     break;
-  case 2: // Reverse Dive (WhamDown/Down/From/12/400/200)
-    c.voice = 4;
+  case 2: // Reverse Dive (Whammy/Down/From/12/400/200)
+    c.voice = kVoiceWhammy;
     c.dir = GestureDir::Down;
     c.motion = GestureMotion::FromDepth;
     c.depthSt = 12.0f;
     c.timeMs = 400.0f;
     c.retMs = 200.0f;
     break;
-  case 3: // Reverse Toe (WhamUp/Up/From/12/250/150)
-    c.voice = 0;
+  case 3: // Reverse Toe (Whammy/Up/From/12/250/150)
+    c.voice = kVoiceWhammy;
     c.dir = GestureDir::Up;
     c.motion = GestureMotion::FromDepth;
     c.depthSt = 12.0f;
@@ -127,23 +153,23 @@ inline GestureConfig defaultGestureConfig(int slot)
     c.retMs = 150.0f;
     break;
   case 4: // Ring Sweep (Ring/Up/To/12/500/300)
-    c.voice = 2;
+    c.voice = kVoiceRing;
     c.dir = GestureDir::Up;
     c.motion = GestureMotion::ToDepth;
     c.depthSt = 12.0f;
     c.timeMs = 500.0f;
     c.retMs = 300.0f;
     break;
-  case 5: // Half Toe (WhamUp/Up/To/6/100/150)
-    c.voice = 0;
+  case 5: // Half Toe (Whammy/Up/To/6/100/150)
+    c.voice = kVoiceWhammy;
     c.dir = GestureDir::Up;
     c.motion = GestureMotion::ToDepth;
     c.depthSt = 6.0f;
     c.timeMs = 100.0f;
     c.retMs = 150.0f;
     break;
-  case 6: // Deep Drop (WhamDown/Down/To/12/150/400)
-    c.voice = 4;
+  case 6: // Deep Drop (Whammy/Down/To/12/150/400)
+    c.voice = kVoiceWhammy;
     c.dir = GestureDir::Down;
     c.motion = GestureMotion::ToDepth;
     c.depthSt = 12.0f;
@@ -152,7 +178,7 @@ inline GestureConfig defaultGestureConfig(int slot)
     break;
   case 7: // Ring Fall (Ring/Down/To/12/400/200)
   default:
-    c.voice = 2;
+    c.voice = kVoiceRing;
     c.dir = GestureDir::Down;
     c.motion = GestureMotion::ToDepth;
     c.depthSt = 12.0f;

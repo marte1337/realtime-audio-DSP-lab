@@ -1,10 +1,13 @@
 # Special FX Reference Study — Laser & Glitch
 
-Branch: `feature/pitch-controls-refactor` (via Toe/Dive milestone
-`3b59005` on `research/special-fx-performance`, from `6113f3b`).
-Date: 2026-10-11. Status: Laser + unified gestures built +
-offline-verified. Hardware ACCEPTED Whammy/Ring/Toe (bit-preserved);
-gestures + WhamDown await audition. Glitch is proposal-only.
+Branch: `feature/pitch-hardware-refinements` (from checkpoint
+`49231ac` on `feature/pitch-controls-refactor`; via Toe/Dive
+milestone `3b59005` on `research/special-fx-performance`, from
+`6113f3b`). Date: 2026-10-19. Status: hardware-audition
+refinements built + offline-verified, UNCOMMITTED. Hardware
+ACCEPTED Whammy/Ring/Toe (bit-preserved); Detune REMOVED;
+unified Whammy + DualWham v1 + gestures await audition.
+Glitch is proposal-only.
 
 Reference: Neural DSP Archetype: Misha Mansoor X, Special FX section.
 Sources: official manual (`neuraldsp.com/manual/archetype-misha-mansoor-x`),
@@ -96,27 +99,49 @@ One normalized expression position 0..1 → per-voice heel/toe maps,
 driven by the manual slider/pedal (future MIDI) and performance
 gestures. Envelope-follower control was REMOVED per hardware feedback
 (envelope/Speed/Sensitivity deleted from DSP, router, UI, and tests).
-Five creative voices (ours, not copies):
+Four creative voices (ours, not copies):
 
 | Voice  | Heel (e=0) | Toe (e=1) | Notes |
 |---|---|---|---|
-| WhamUp | unison (bit-exact dry leg) | +12 st single voice | linear st map |
-| WhamDown | unison (V3 down leg) | −12 st single voice | continuous dive side |
+| Whammy | unison (bit-exact dry leg) | ±12 st single voice | Direction Up/Down selects the leg |
 | Dual | unison pair | V1 −12, V2 +12 (contrary) | 0.5 gains, no clip |
+| DualWham | unison pair | A +12, B +24 targets (meas. +11.2/+22.7) | V2→V3 cascade, no silent clamp |
 | Ring | 60 Hz carrier (growl AM) | 2000 Hz carrier (metallic) | log sweep |
-| Detune | ±6¢ + LFO ±2¢ @0.15 Hz | ±24¢ + LFO ±30¢ @4 Hz | opposite-phase LFO |
 
-Primitives reused, not duplicated: 5× AlienDoppler (V1/V2 normal,
-V3 normal-down, V4/V5 dedicated gesture legs), 2× AlienRing (normal +
+Detune was REMOVED per hardware feedback (unmusical next to the other
+voices; its heel was measurably detuned ±6¢ — the idle-colour culprit).
+WhamUp/WhamDown merged into one Whammy + Direction (single source of
+truth; no contradictory Up/Down states, no silent cancellation).
+
+Primitives reused, not duplicated: 7× AlienDoppler (V1/V2/V3 normal —
+V3 doubles as the DualWham-B cascade stage 2; V4/V5 dedicated gesture
+legs; V6/V7 gesture DualWham-B cascade), 2× AlienRing (normal +
 gesture), AlienDsp SmoothParam/QuadOsc. All legs process every sample
 (primed; parked dopplers cost one ring write); selection only retargets
 gains — no stale audio, ever.
 
+THREE INDEPENDENT SECTIONS (TRANSPOSE / CREATIVE-EXPRESSION /
+CREATIVE-GESTURES, each with its own enable): one shared engine tap —
+either section keeps it live, never stacked. Expression-off parks the
+normal legs at heel behind a bit-dry leg; gestures fire with Expression
+disabled (press bends, release returns to dry). Per-voice UI gating
+(`exprVoiceUsesDir/Depth`, `gestureVoiceUsesDir` in `SpecGesture.h`):
+Direction only where it steers, Depth only on pitched voices — no
+silent no-op dials.
+
 Pitch tradeoff (documented in `SpecLaser.h`): Doppler variable-delay
 gives sweep-continuous, polyphonic, low-latency pitch with static sag
 at extremes (~−1.5 st at −12, ~−0.8 st at +12, measured toward unison).
-Production GuitarTranspose was rejected for this role: 16 ms latency,
-weak upward shifts, resync warble under continuous sweeps.
+Deeper finding (stacking study, 2026-10-20): the wrap-slip error is
+INPUT-FREQUENCY-dependent — printed(+12) = 2f − signed(frac(0.015·f))
+× 66.67 Hz (8/8 blind predictions hit to 0.1 Hz). A 220 Hz input
+prints +11.2, a 196 Hz input +12.2, so Transpose −2 moves the Whammy
+toe only ~1 st, and the DualWham cascade compounds this until voice B
+moves only ~0.4 st — the hardware "same range" report, explained.
+Shared with the accepted Whammy path; pitch-sync stagger is the known
+fix but would change the accepted sound. Production GuitarTranspose
+was rejected for this role: 16 ms latency, weak upward shifts, resync
+warble under continuous sweeps.
 
 PERFORMANCE GESTURES (unified engine, `SpecGesture.h`): 8 independent
 slots × {effect, direction, depth, motion, time, return}, triggered by
@@ -125,9 +150,11 @@ command, MIDI-ready). Same-voice gestures override expression (legacy
 Toe shape, bit-exact); cross-voice gestures crossfade to the dedicated
 legs (legacy Dive shape). To-Depth: normal → depth over Time, back over
 Return. From-Depth: engage AT depth (10 ms masked fade), sweep home
-over Time. Newest trigger wins; release returns to live normal (stale
-gestures never revive). Detune is not a gesture voice. NaN/Inf input
-sanitized. Depth capped at 12 st (probe: −18/−24 smear to mush).
+over Time. Newest trigger wins; release returns to live normal — or to
+dry when Expression is off (stale gestures never revive). Pitch-voice
+gestures always target their pos-1 extreme (Whammy polarity comes from
+Direction selecting the leg, NOT the map end). NaN/Inf input sanitized.
+Depth capped at 12 st (probe: −18/−24 smear to mush).
 
 Insertion: reference puts Special FX FIRST. Our DEV router (`DevSpecFx`)
 runs twin engines at pre-gain (post-transpose, pre-TightDrive) and
@@ -167,20 +194,29 @@ default Chaos/Pitch/Length/Occurrence maps.
 Estimated scope: engine ~500 lines + tests + study + UI ≈ one focused
 milestone AFTER Laser hardware verdict. No code written yet — deliberate.
 
-## 7. VALIDATION STATUS (feature/pitch-controls-refactor, uncommitted)
-- `tdm_tests`: 2729 checks / 0 failures (specfx: 5 goldens vs `6113f3b`
-  bit-identical, 5 voices, 8-slot gestures, interruption, one-shot,
-  MIDI-readiness, transpose+creative simultaneity).
-- Study renders (`/tmp/spec_renders2`): 5 sweeps + post A/B + dive /
-  toestab / reverse-dive / ring-sweep gesture demos; toestab peak 0.710
-  (unchanged vs the Toe milestone).
-- CPU/voice: 24–57 µs/block (0.23–0.53%) incl. gesture legs; dive/ring
-  held ≈ 42 µs (0.39%).
+## 7. VALIDATION STATUS (feature/pitch-hardware-refinements, uncommitted)
+- `tdm_tests`: 2764 checks / 0 failures (specfx: Whammy/Dual/Ring
+  goldens vs `6113f3b` bit-identical + toe-press MATCH, neutral suite,
+  unified direction, DualWham holds, independence, 8-slot gestures,
+  interruption, one-shot, MIDI-readiness, transpose+gesture
+  simultaneity). Detune golden retired with the voice (never accepted).
+- `tdm_dev --smoke-test`: 0 failures (incl. rewritten UI probe:
+  3 sections, 4 voices + direction/depth wiring + gating, gestures
+  fire with Expression off and return near-dry). `--smoke-ui`: exit 0.
+- Study renders (`/tmp/spec_renders3`): whamup/whamdown/dual/dualwham/
+  ring pre sweeps + whamup/dualwham/ring post A/B + dive / toestab /
+  reverse-dive / ring-sweep / dualwham-stab gesture demos; all peaks
+  0.54–0.72, movement confirmed vs bypass halves.
+- CPU/voice: whamup 40.8 / whamdown 38.2 / dual 45.5 / dualwham 50.3 /
+  ring 29.4 µs/block (0.28–0.47%); dive/ring held ≈ 60 µs (0.57%).
 - Latency: 1680 samples (35 ms doppler bound; ring leg ~1). Unchanged.
+- DualWham measured (220 Hz sine): toe A=420 (+11.2), B=820 (+22.7);
+  expr 0.25 → A=258/B=308; expr 0.75 → A=356/B=584; bounded, finite.
+  Mid-sweep smears (doppler character — audition decides).
 - Synthetic signals prove MATH ONLY. Hardware accepted Whammy/Ring/Toe
-  (preserved bit-exact above); gestures + WhamDown await audition:
-  Fast Toe → Slow Dive → Reverse Dive/Toe → Ring Sweep → WhamDown
-  expression → Dual/Detune regression → envelope-removed UI.
+  (preserved bit-exact above); unified Whammy/Direction + DualWham v1
+  + independent gestures await audition (open questions in §9 and
+  the experiments log).
 
 ## 8. PITCH SHIFT CONSOLIDATION (this branch, uncommitted)
 
@@ -192,7 +228,35 @@ SHIFT group (TRANSPOSE + CREATIVE PITCH + PERFORMANCE GESTURES, 8
 staged slots, trigger-by-ID + one-shot, per-slot factory reset); DSP
 routing is untouched. Details: `docs/experiments.md` refactor entry.
 
-## 9. FILES (milestones + uncommitted refactor above)
+## 9. HARDWARE AUDITION REFINEMENTS (this branch, uncommitted)
+
+Checkpoint `49231ac`, then on `feature/pitch-hardware-refinements`:
+
+1. Neutral probe FIRST: Whammy/Dual heels bit-dry, Ring heel full AM
+   (by design), Detune heel measurably detuned → Detune removed rather
+   than repaired.
+2. Unified Whammy: one voice + Direction Up/Down (single source of
+   truth); Up keeps the accepted V1 path, Down the working V3 path.
+3. DualWham v1: A on V1, B via the V2→V3 cascade (+12+12, existing
+   Doppler first, skew unaligned); +24 target measures +22.7 — no
+   silent clamp, audition decides usability.
+4. Independent enables: `setExpressionEnabled` / `setGesturesEnabled`
+   share one tap target (either keeps it live, never stacked);
+   expression-off parks behind a bit-dry leg; gestures fire dry.
+5. Per-voice UI gating from `SpecGesture.h` (no silent no-ops).
+6. Tests rewritten (50 specfx groups): goldens hold, neutral suite,
+   independence, DualWham stepped-hold oracles (continuous-sweep
+   peak-picking was defeated by doppler spread + grid-miss nulls).
+
+MIDI-ready API preserved: `pressSlot`/`releaseSlot`/`oneShotSlot` by
+stable ID 0–7, working with Expression disabled.
+
+Remaining hardware-audition questions: DualWham +24 usability (sag /
+skew / aliasing under real playing); Whammy-Down continuous feel;
+gesture firing with Expression off across NAMs; any residual idle
+colour with Expression on at heel; From-Depth fast-print limits.
+
+## 10. FILES (milestones + uncommitted refinements above)
 New: `dsp/SpecInsert.h`,
 `dsp/lab/SpecialFx/{SpecLaser,DevSpecFx,SpecGesture}.h`,
 `dsp/lab/SpecialFx/SpecStudy.cpp`, `tests/TestSpecFx.cpp`,

@@ -144,7 +144,8 @@ enum SliderTag
   // CREATIVE PITCH section (laser engine; live).
   kTagSpecExpr,
   kTagSpecMix,
-  // PERFORMANCE GESTURES section (staged per-slot edits; Save commits).
+  kTagSpecDepth, // expression depth in st (Whammy/Dual/DualWham; Ring ignores)
+  // CREATIVE PITCH — GESTURES section (staged per-slot edits; Save commits).
   kTagGestDepth,
   kTagGestTime,
   kTagGestRet
@@ -218,6 +219,8 @@ double resetValueForTag(SliderTag tag)
     return 0.0; // expression heel (dry/unison start)
   case kTagSpecMix:
     return 100.0;
+  case kTagSpecDepth:
+    return 12.0; // full validated range
   case kTagGestDepth:
     return 12.0; // gesture modal defaults (per-slot factory on select)
   case kTagGestTime:
@@ -276,6 +279,7 @@ int smokeTest()
     check((float)resetValueForTag(kTagAlienWarpFb) == 0.5f, "reset: alien warp fb -> 0.50");
     check((float)resetValueForTag(kTagSpecExpr) == 0.0f, "reset: spec expr -> heel");
     check((float)resetValueForTag(kTagSpecMix) == 100.0f, "reset: spec mix -> 100%");
+    check((float)resetValueForTag(kTagSpecDepth) == 12.0f, "reset: spec depth -> 12");
     check((float)resetValueForTag(kTagGestDepth) == 12.0f, "reset: gest depth -> 12");
     check((float)resetValueForTag(kTagGestTime) == 100.0f, "reset: gest time -> 100");
     check((float)resetValueForTag(kTagGestRet) == 100.0f, "reset: gest ret -> 100");
@@ -634,8 +638,10 @@ bool probeDoubleClickReset(std::string& detail)
   // into the rig's pre-gain and post-IR spec seams pre-start. UI drives
   // it via atomic setters only; installed-but-off is transparent).
   tdm::specfx::DevSpecFx _spec;
-  NSButton* _specCheck;
+  NSButton* _specCheck; // expression-section enable
+  NSButton* _specGestCheck; // gesture-section enable (independent)
   NSSegmentedControl* _specVoiceSeg;
+  NSSegmentedControl* _specDirSeg; // Whammy polarity (single source of truth)
   NSSegmentedControl* _specInsertSeg;
   // Performance-gesture editor: per-slot STAGED configs + names (UI-side
   // only). Save commits the displayed slot; TRIGGER/1-Shot commit, then
@@ -741,11 +747,15 @@ bool probeDoubleClickReset(std::string& detail)
     _alien.setWarpFb(0.5f);
     _alien.setWarpShiftHz(100.0f);
     _alien.setWarpSt(3.0f);
-    // Creative Pitch lab state: off (dry start), WhamUp, heel,
-    // pre-gain insert. Installed into both spec seams pre-start (off-RT).
-    // Gesture slots init to factory in the router; staging mirrors them.
-    _spec.setEnabled(false);
-    _spec.setVoice(tdm::specfx::DevSpecFx::Voice::WhamUp);
+    // Creative Pitch lab state: both sections off (dry start), Whammy
+    // Up, full depth, heel, pre-gain insert. Installed into both spec
+    // seams pre-start (off-RT). Gesture slots init to factory in the
+    // router; staging mirrors them.
+    _spec.setExpressionEnabled(false);
+    _spec.setGesturesEnabled(false);
+    _spec.setVoice(tdm::specfx::DevSpecFx::Voice::Whammy);
+    _spec.setExprDirection(tdm::specfx::GestureDir::Up);
+    _spec.setExprDepth(tdm::specfx::kMaxGestureDepthSt);
     _spec.setExpression(0.0f);
     _spec.setMix(1.0f);
     _spec.setInsert(tdm::specfx::DevSpecFx::Insert::Pre);
@@ -1189,9 +1199,10 @@ bool probeDoubleClickReset(std::string& detail)
   y += 40;
 
   // PITCH SHIFT group: TRANSPOSE (stable retuning, in signal-flow
-  // position Gate -> Transpose -> Drive) + CREATIVE PITCH + PERFORMANCE
-  // GESTURES below the disclosure anchor. DSP routing is untouched by
-  // this consolidation; only the DEV controls move together.
+  // position Gate -> Transpose -> Drive) + CREATIVE PITCH — EXPRESSION +
+  // CREATIVE PITCH — GESTURES below the disclosure anchor. The three
+  // sections enable independently; DSP routing is untouched by this
+  // consolidation — only the DEV controls move together.
   NSTextField* pitchHead = [self makeLabel:@"PITCH SHIFT" frame:NSMakeRect(20, y, 180, 22) small:NO];
   [_docView addSubview:pitchHead];
   y += 26;
@@ -1243,10 +1254,16 @@ bool probeDoubleClickReset(std::string& detail)
   const NSUInteger lowerStart = _docView.subviews.count;
   y += 10; // breathing room above Creative Pitch when panels are closed
 
-  // CREATIVE PITCH subsection (DEV research: expression-driven Laser at
-  // pre-gain and post-IR taps. One normalized expression position drives
-  // per-voice heel/toe maps; performance gestures below automate moves).
-  _specCheck = [NSButton checkboxWithTitle:@"Creative Pitch"
+  // CREATIVE PITCH — EXPRESSION subsection (DEV research:
+  // expression-driven Laser at pre-gain and post-IR taps. One normalized
+  // expression position drives per-voice heel/toe maps; the gestures
+  // section below is independently enabled and automates moves).
+  NSTextField* specHead = [self makeLabel:@"CREATIVE PITCH — EXPRESSION"
+                                    frame:NSMakeRect(20, y, 280, 22)
+                                    small:NO];
+  [_docView addSubview:specHead];
+  y += 30;
+  _specCheck = [NSButton checkboxWithTitle:@"Expression"
                                     target:self
                                     action:@selector(specToggled:)];
   _specCheck.frame = NSMakeRect(20, y, 180, 22);
@@ -1256,13 +1273,32 @@ bool probeDoubleClickReset(std::string& detail)
   NSTextField* specVoiceLabel = [self makeLabel:@"Effect" frame:NSMakeRect(20, y, 110, 22) small:NO];
   [_docView addSubview:specVoiceLabel];
   _specVoiceSeg = [NSSegmentedControl
-      segmentedControlWithLabels:@[ @"Wham \u2191", @"Wham \u2193", @"Dual", @"Ring", @"Detune" ]
+      segmentedControlWithLabels:@[ @"Whammy", @"Dual", @"DualWham", @"Ring" ]
                     trackingMode:NSSegmentSwitchTrackingSelectOne
                           target:self
                           action:@selector(specVoiceSelected:)];
   _specVoiceSeg.frame = NSMakeRect(135, y - 2, 400, 26);
   _specVoiceSeg.selectedSegment = 0;
   [_docView addSubview:_specVoiceSeg];
+  y += 30;
+  NSTextField* specDirLabel = [self makeLabel:@"Direction" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:specDirLabel];
+  _specDirSeg = [NSSegmentedControl segmentedControlWithLabels:@[ @"Up", @"Down" ]
+                                                  trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                        target:self
+                                                        action:@selector(specDirSelected:)];
+  _specDirSeg.frame = NSMakeRect(135, y - 2, 200, 26);
+  _specDirSeg.selectedSegment = 0;
+  [_docView addSubview:_specDirSeg];
+  y += 30;
+  [self addSliderRow:@"Depth"
+                 tag:kTagSpecDepth
+                 min:0
+                 max:tdm::specfx::kMaxGestureDepthSt
+                init:tdm::specfx::kMaxGestureDepthSt
+               reset:tdm::specfx::kMaxGestureDepthSt
+                   y:y
+               width:kWidth];
   y += 30;
   [self addSliderRow:@"Expression"
                  tag:kTagSpecExpr
@@ -1293,10 +1329,17 @@ bool probeDoubleClickReset(std::string& detail)
   [_docView addSubview:_specInsertSeg];
   y += 30;
   y += 8; // breathing room above the gestures caption
-  NSTextField* gestHead = [self makeLabel:@"PERFORMANCE GESTURES"
-                                    frame:NSMakeRect(20, y, 240, 22)
+  NSTextField* gestHead = [self makeLabel:@"CREATIVE PITCH — GESTURES"
+                                    frame:NSMakeRect(20, y, 280, 22)
                                     small:NO];
   [_docView addSubview:gestHead];
+  y += 30;
+  _specGestCheck = [NSButton checkboxWithTitle:@"Gestures"
+                                        target:self
+                                        action:@selector(specGestToggled:)];
+  _specGestCheck.frame = NSMakeRect(20, y, 180, 22);
+  _specGestCheck.state = NSControlStateValueOff; // dry start; works with Expression off
+  [_docView addSubview:_specGestCheck];
   y += 30;
   NSTextField* gestSlotLabel = [self makeLabel:@"Gesture" frame:NSMakeRect(20, y, 110, 22) small:NO];
   [_docView addSubview:gestSlotLabel];
@@ -1333,11 +1376,11 @@ bool probeDoubleClickReset(std::string& detail)
       [self makeLabel:@"Effect" frame:NSMakeRect(20, y, 110, 22) small:NO];
   [_docView addSubview:gestEffectLabel];
   _specGestEffectSeg = [NSSegmentedControl
-      segmentedControlWithLabels:@[ @"Wham \u2191", @"Wham \u2193", @"Dual", @"Ring" ]
+      segmentedControlWithLabels:@[ @"Whammy", @"Dual", @"DualWham", @"Ring" ]
                     trackingMode:NSSegmentSwitchTrackingSelectOne
                           target:self
                           action:@selector(specGestEffectSelected:)];
-  _specGestEffectSeg.frame = NSMakeRect(135, y - 2, 340, 26);
+  _specGestEffectSeg.frame = NSMakeRect(135, y - 2, 400, 26);
   _specGestEffectSeg.selectedSegment = 0;
   [_docView addSubview:_specGestEffectSeg];
   y += 30;
@@ -1403,6 +1446,7 @@ bool probeDoubleClickReset(std::string& detail)
   [_docView addSubview:gestReset];
   y += 30;
   [self refreshGestureUI]; // sync fields to staging (slot 0 factory)
+  [self refreshSpecGating]; // per-voice Direction/Depth enablement
   y += 14; // gap above the SLAM section
 
   // SLAM section (DEV audition: Push/Crush/Mass across three taps; Impact
@@ -1789,6 +1833,8 @@ bool probeDoubleClickReset(std::string& detail)
       [NSString stringWithFormat:@"%.0f%%", _spec.expression() * 100.0];
   _valueLabels[@(kTagSpecMix)].stringValue =
       [NSString stringWithFormat:@"%.0f%%", _spec.mix01() * 100.0];
+  _valueLabels[@(kTagSpecDepth)].stringValue =
+      [NSString stringWithFormat:@"%.1f st", _spec.exprDepth()];
   // Gesture labels show STAGED (possibly uncommitted) edits, like the fields.
   const tdm::specfx::GestureConfig& gst = _specGestStage[_specGestSlot];
   _valueLabels[@(kTagGestDepth)].stringValue = [NSString stringWithFormat:@"%.1f st", gst.depthSt];
@@ -1944,6 +1990,9 @@ bool probeDoubleClickReset(std::string& detail)
     break;
   case kTagSpecMix:
     _spec.setMix((float)(v / 100.0));
+    break;
+  case kTagSpecDepth:
+    _spec.setExprDepth((float)v); // live (engine clamps to 0..12)
     break;
   case kTagGestDepth: // staged gesture edits (Save commits the slot)
     _specGestStage[_specGestSlot].depthSt = (float)v;
@@ -2165,18 +2214,39 @@ bool probeDoubleClickReset(std::string& detail)
 // momentary (down/up pair) and commits staged edits before firing.
 - (void)specToggled:(NSButton*)sender
 {
-  _spec.setEnabled(sender.state == NSControlStateValueOn);
+  _spec.setExpressionEnabled(sender.state == NSControlStateValueOn);
+}
+
+- (void)specGestToggled:(NSButton*)sender
+{
+  _spec.setGesturesEnabled(sender.state == NSControlStateValueOn);
 }
 
 - (void)specVoiceSelected:(NSSegmentedControl*)sender
 {
   using Voice = tdm::specfx::DevSpecFx::Voice;
   const NSInteger seg = sender.selectedSegment;
-  _spec.setVoice(seg == 1   ? Voice::WhamDown
-                 : seg == 2 ? Voice::Dual
+  _spec.setVoice(seg == 1   ? Voice::Dual
+                 : seg == 2 ? Voice::DualWham
                  : seg == 3 ? Voice::Ring
-                 : seg == 4 ? Voice::Detune
-                            : Voice::WhamUp);
+                            : Voice::Whammy);
+  [self refreshSpecGating];
+}
+
+- (void)specDirSelected:(NSSegmentedControl*)sender
+{
+  _spec.setExprDirection((sender.selectedSegment == 1) ? tdm::specfx::GestureDir::Down
+                                                      : tdm::specfx::GestureDir::Up);
+}
+
+// Per-voice control gating (single source of truth in SpecGesture.h):
+// Direction applies to Whammy expression only; Depth to every pitched
+// voice (Ring's map is fixed). Disabled — never a silent no-op dial.
+- (void)refreshSpecGating
+{
+  const int v = static_cast<int>(_spec.voice());
+  _specDirSeg.enabled = tdm::specfx::exprVoiceUsesDir(v) ? YES : NO;
+  _sliders[@(kTagSpecDepth)].enabled = tdm::specfx::exprVoiceUsesDepth(v) ? YES : NO;
 }
 
 - (void)specInsertSelected:(NSSegmentedControl*)sender
@@ -2194,8 +2264,11 @@ bool probeDoubleClickReset(std::string& detail)
   [_specGestPopup selectItemAtIndex:s];
   _specGestName.stringValue = _specGestNames[s];
   _specGestEffectSeg.selectedSegment =
-      (c.voice == 4) ? 1 : (c.voice == 1) ? 2 : (c.voice == 2) ? 3 : 0;
+      (c.voice == 1) ? 1 : (c.voice == 3) ? 2 : (c.voice == 2) ? 3 : 0;
   _specGestDirSeg.selectedSegment = (c.dir == tdm::specfx::GestureDir::Down) ? 1 : 0;
+  // Direction only steers Whammy (polarity) and Ring (sweep direction);
+  // Dual/DualWham have fixed spreads, so the dial parks disabled.
+  _specGestDirSeg.enabled = tdm::specfx::gestureVoiceUsesDir(c.voice) ? YES : NO;
   _specGestMotionSeg.selectedSegment =
       (c.motion == tdm::specfx::GestureMotion::FromDepth) ? 1 : 0;
   _sliders[@(kTagGestDepth)].doubleValue = c.depthSt;
@@ -2218,7 +2291,9 @@ bool probeDoubleClickReset(std::string& detail)
 {
   const NSInteger seg = sender.selectedSegment;
   _specGestStage[_specGestSlot].voice =
-      (seg == 1) ? 4 : (seg == 2) ? 1 : (seg == 3) ? 2 : 0; // Dn/Dual/Ring/Up
+      (seg == 1) ? 1 : (seg == 2) ? 3 : (seg == 3) ? 2 : 0; // Dual/DualWham/Ring/Whammy
+  _specGestDirSeg.enabled =
+      tdm::specfx::gestureVoiceUsesDir(_specGestStage[_specGestSlot].voice) ? YES : NO;
 }
 
 - (void)specGestDirSelected:(NSSegmentedControl*)sender
@@ -2965,18 +3040,21 @@ bool probeDoubleClickReset(std::string& detail)
   };
   using Voice = tdm::specfx::DevSpecFx::Voice;
   using Insert = tdm::specfx::DevSpecFx::Insert;
-  // Defaults: checkbox off, WhamUp, heel, 100%, Pre, slot 0 staged+committed.
-  if (_specCheck.state != NSControlStateValueOff)
+  // Defaults: both sections off, Whammy/Up, full depth, heel, 100%, Pre,
+  // slot 0 staged+committed.
+  if (_specCheck.state != NSControlStateValueOff || _specGestCheck.state != NSControlStateValueOff)
     return fail("checkbox not off");
-  if (_spec.isEnabled() || _spec.voice() != Voice::WhamUp)
+  if (_spec.isExpressionEnabled() || _spec.isGesturesEnabled() || _spec.voice() != Voice::Whammy
+      || _spec.exprDirection() != tdm::specfx::GestureDir::Up || _spec.exprDepth() != 12.0f)
     return fail("router defaults wrong");
   if (_spec.expression() != 0.0f || _spec.mix01() != 1.0f || _spec.insert() != Insert::Pre)
     return fail("router param defaults wrong");
-  if (_spec.slotVoice(0) != Voice::WhamUp || _spec.slotTimeMs(0) != 50.0f
+  if (_spec.slotVoice(0) != Voice::Whammy || _spec.slotTimeMs(0) != 50.0f
       || _spec.slotRetMs(0) != 100.0f || _spec.slotDepthSt(0) != 12.0f)
     return fail("router slot 0 not factory");
-  if (_specVoiceSeg.selectedSegment != 0 || _specInsertSeg.selectedSegment != 0)
-    return fail("segments not on WhamUp/Pre");
+  if (_specVoiceSeg.selectedSegment != 0 || _specInsertSeg.selectedSegment != 0
+      || _specDirSeg.selectedSegment != 0)
+    return fail("segments not on Whammy/Up/Pre");
   if ([_specGestPopup numberOfItems] != tdm::specfx::kNumGestureSlots
       || [_specGestPopup indexOfSelectedItem] != 0)
     return fail("gesture popup wrong");
@@ -2998,21 +3076,50 @@ bool probeDoubleClickReset(std::string& detail)
     return fail("mix did not reach router");
   _sliders[@(kTagSpecMix)].doubleValue = 100.0;
   [self paramChanged:_sliders[@(kTagSpecMix)]];
-  // Selectors reach the router (5 voices + insert).
-  if ([_specVoiceSeg segmentCount] != 5 || [_specInsertSeg segmentCount] != 2)
+  _sliders[@(kTagSpecDepth)].doubleValue = 6.0;
+  [self paramChanged:_sliders[@(kTagSpecDepth)]];
+  if (std::fabs(_spec.exprDepth() - 6.0f) > 1e-6f)
+    return fail("depth did not reach router");
+  [self refreshValueLabels:_engine->rig().params()];
+  if (![_valueLabels[@(kTagSpecDepth)].stringValue isEqualToString:@"6.0 st"])
+    return fail("depth label wrong");
+  _sliders[@(kTagSpecDepth)].doubleValue = 12.0;
+  [self paramChanged:_sliders[@(kTagSpecDepth)]];
+  // Selectors reach the router (4 voices + direction + insert).
+  if ([_specVoiceSeg segmentCount] != 4 || [_specInsertSeg segmentCount] != 2
+      || [_specDirSeg segmentCount] != 2)
     return fail("selector segment counts wrong");
-  for (NSInteger seg = 0; seg < 5; ++seg)
+  for (NSInteger seg = 0; seg < 4; ++seg)
   {
     _specVoiceSeg.selectedSegment = seg;
     [self specVoiceSelected:_specVoiceSeg];
-    const Voice want = seg == 1   ? Voice::WhamDown
-        : seg == 2                ? Voice::Dual
+    const Voice want = seg == 1   ? Voice::Dual
+        : seg == 2                ? Voice::DualWham
         : seg == 3                ? Voice::Ring
-        : seg == 4                ? Voice::Detune
-                                  : Voice::WhamUp;
+                                  : Voice::Whammy;
     if (_spec.voice() != want)
       return fail("voice did not reach router");
   }
+  for (NSInteger seg = 0; seg < 2; ++seg)
+  {
+    _specDirSeg.selectedSegment = seg;
+    [self specDirSelected:_specDirSeg];
+    if (_spec.exprDirection()
+        != (seg == 1 ? tdm::specfx::GestureDir::Down : tdm::specfx::GestureDir::Up))
+      return fail("direction did not reach router");
+  }
+  _specDirSeg.selectedSegment = 0;
+  [self specDirSelected:_specDirSeg];
+  // Per-voice gating: Ring parks Direction + Depth disabled (fixed map);
+  // Whammy re-arms both. The dials keep their values for the return trip.
+  _specVoiceSeg.selectedSegment = 3;
+  [self specVoiceSelected:_specVoiceSeg];
+  if (_specDirSeg.enabled || _sliders[@(kTagSpecDepth)].enabled)
+    return fail("ring gating wrong");
+  _specVoiceSeg.selectedSegment = 0;
+  [self specVoiceSelected:_specVoiceSeg];
+  if (!_specDirSeg.enabled || !_sliders[@(kTagSpecDepth)].enabled)
+    return fail("whammy gating wrong");
   for (NSInteger seg = 0; seg < 2; ++seg)
   {
     _specInsertSeg.selectedSegment = seg;
@@ -3029,10 +3136,19 @@ bool probeDoubleClickReset(std::string& detail)
   [self specGestPopupSelected:_specGestPopup];
   if (_sliders[@(kTagGestTime)].doubleValue != 600.0
       || _sliders[@(kTagGestDepth)].doubleValue != 12.0
-      || _specGestEffectSeg.selectedSegment != 1 || _specGestDirSeg.selectedSegment != 1
+      || _specGestEffectSeg.selectedSegment != 0 || _specGestDirSeg.selectedSegment != 1
       || _specGestMotionSeg.selectedSegment != 0
       || ![_specGestName.stringValue isEqualToString:@"Slow Dive"])
     return fail("slot 1 fields wrong");
+  // Gesture direction gating: Whammy steers it, Dual parks it disabled.
+  if (!_specGestDirSeg.enabled)
+    return fail("gesture dir gating wrong");
+  _specGestEffectSeg.selectedSegment = 1;
+  [self specGestEffectSelected:_specGestEffectSeg];
+  if (_specGestDirSeg.enabled)
+    return fail("dual gesture dir should park");
+  _specGestEffectSeg.selectedSegment = 0;
+  [self specGestEffectSelected:_specGestEffectSeg];
   if (((TdmResetSlider*)_sliders[@(kTagGestTime)]).resetValue != 600.0)
     return fail("per-slot double-click reset wrong");
   [_specGestPopup selectItemAtIndex:0];
@@ -3070,6 +3186,10 @@ bool probeDoubleClickReset(std::string& detail)
   _engine->rig().reset(48000.0, 512);
   _specCheck.state = NSControlStateValueOn;
   [self specToggled:_specCheck];
+  _specGestCheck.state = NSControlStateValueOn;
+  [self specGestToggled:_specGestCheck];
+  if (!_spec.isExpressionEnabled() || !_spec.isGesturesEnabled())
+    return fail("section enables lost");
   std::vector<float> tick(512, 0.1f);
   [self specGestDown:nil];
   _spec.preTap().process(tick.data(), tick.data(), 512);
@@ -3103,8 +3223,32 @@ bool probeDoubleClickReset(std::string& detail)
     _spec.preTap().process(tick.data(), tick.data(), 512);
   if (_spec.preGestureActive())
     return fail("one-shot stuck");
+  // Gestures fire with the Expression section OFF (independent enable):
+  // a held Fast Toe bends the tone, release returns to bit-dry.
   _specCheck.state = NSControlStateValueOff;
   [self specToggled:_specCheck];
+  std::vector<float> tone(512, 0.0f);
+  for (int i = 0; i < 512; ++i)
+    tone[static_cast<size_t>(i)] = 0.5f * std::sin(2.0 * 3.14159265358979 * 110.0 * i / 48000.0);
+  [self specGestDown:nil];
+  std::vector<float> held(512, 0.0f);
+  for (int k = 0; k < 9; ++k) // slot 0 Time 50 ms: hold well past the top
+    _spec.preTap().process(tone.data(), held.data(), 512);
+  if (held == tone)
+    return fail("gesture rendered dry with expression off");
+  [self specGestUp:nil];
+  for (int k = 0; k < 24; ++k) // slot 0 Return 100 ms + margin
+    _spec.preTap().process(tone.data(), held.data(), 512);
+  // Near-dry, not bit-dry: the legacy gain glide stalls ~7e-6 short of
+  // its snap window (kept for golden-exactness; -109 dB, re-snapped by
+  // the next dip-bottom clear). The engine tests pin the same bound.
+  float relDiff = 0.0f;
+  for (int i = 0; i < 512; ++i)
+    relDiff = std::max(relDiff, std::fabs(held[static_cast<size_t>(i)] - tone[static_cast<size_t>(i)]));
+  if (_spec.preGestureActive() || relDiff > 1e-5f)
+    return fail("gesture release not dry with expression off");
+  _specGestCheck.state = NSControlStateValueOff;
+  [self specGestToggled:_specGestCheck];
   // Transparency: installed-but-off renders bit-identical to no seams.
   _engine->rig().reset(48000.0, 512);
   const int n = 512 * 16; // block-aligned: no ragged tail reads
@@ -3154,7 +3298,8 @@ bool probeDoubleClickReset(std::string& detail)
     float* bo[1] = {atkDry.data() + b * 512};
     _engine->rig().processBlock(bi, 1, bo, 1, 512);
   }
-  // Enabled voices render at toe for both inserts (all five).
+  // Enabled voices render at toe for both inserts (all four, plus a
+  // Whammy-Down pass — polarity must bend the tone the other way).
   _sliders[@(kTagSpecExpr)].doubleValue = 100.0;
   [self paramChanged:_sliders[@(kTagSpecExpr)]];
   for (NSInteger ins = 0; ins < 2; ++ins)
@@ -3163,8 +3308,12 @@ bool probeDoubleClickReset(std::string& detail)
     [self specInsertSelected:_specInsertSeg];
     for (NSInteger seg = 0; seg < 5; ++seg)
     {
-      _specVoiceSeg.selectedSegment = seg;
+      // Pass 4 re-renders Whammy with Direction Down (polarity must bend
+      // the tone rather than cancel); passes 0..3 run Up.
+      _specVoiceSeg.selectedSegment = (seg == 4) ? 0 : seg;
       [self specVoiceSelected:_specVoiceSeg];
+      _specDirSeg.selectedSegment = (seg == 4) ? 1 : 0;
+      [self specDirSelected:_specDirSeg];
       _specCheck.state = NSControlStateValueOn;
       [self specToggled:_specCheck];
       std::vector<float> wet(static_cast<size_t>(na), 0.0f);
@@ -3184,17 +3333,21 @@ bool probeDoubleClickReset(std::string& detail)
     }
   }
   // Slow Dive (slot 1) through the real trigger: held dive renders
-  // (whamup, heel) and releases; telemetry tracks the displacement.
+  // (whammy, heel) and releases; telemetry tracks the displacement.
   _specInsertSeg.selectedSegment = 0;
   [self specInsertSelected:_specInsertSeg];
   _specVoiceSeg.selectedSegment = 0;
   [self specVoiceSelected:_specVoiceSeg];
+  _specDirSeg.selectedSegment = 0;
+  [self specDirSelected:_specDirSeg];
   _sliders[@(kTagSpecExpr)].doubleValue = 0.0;
   [self paramChanged:_sliders[@(kTagSpecExpr)]];
   [_specGestPopup selectItemAtIndex:1];
   [self specGestPopupSelected:_specGestPopup];
   _specCheck.state = NSControlStateValueOn;
   [self specToggled:_specCheck];
+  _specGestCheck.state = NSControlStateValueOn;
+  [self specGestToggled:_specGestCheck];
   [self specGestDown:nil];
   {
     std::vector<float> wet(static_cast<size_t>(na), 0.0f);
@@ -3234,12 +3387,18 @@ bool probeDoubleClickReset(std::string& detail)
   // place above, so router atomics are factory; restore the fields too).
   _specCheck.state = NSControlStateValueOff;
   [self specToggled:_specCheck];
+  _specGestCheck.state = NSControlStateValueOff;
+  [self specGestToggled:_specGestCheck];
   _specVoiceSeg.selectedSegment = 0;
   [self specVoiceSelected:_specVoiceSeg];
+  _specDirSeg.selectedSegment = 0;
+  [self specDirSelected:_specDirSeg];
   _specInsertSeg.selectedSegment = 0;
   [self specInsertSelected:_specInsertSeg];
   _sliders[@(kTagSpecExpr)].doubleValue = 0.0;
   [self paramChanged:_sliders[@(kTagSpecExpr)]];
+  _sliders[@(kTagSpecDepth)].doubleValue = 12.0;
+  [self paramChanged:_sliders[@(kTagSpecDepth)]];
   [_specGestPopup selectItemAtIndex:0];
   [self specGestPopupSelected:_specGestPopup];
   if (![self checkDocGeometry:detail])
