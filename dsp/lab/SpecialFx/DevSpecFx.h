@@ -90,7 +90,7 @@ public:
   void setMix(float v) { mix_.store(clamp01(v), std::memory_order_relaxed); }
   void setInsert(Insert i) { insert_.store(static_cast<int>(i), std::memory_order_relaxed); }
 
-  // --- Gesture slots (UI thread; 0-based stable IDs) ---
+  // --- Gesture slots (UI + MIDI threads; 0-based stable IDs) ---
   void setSlotVoice(int slot, Voice v)
   {
     if (validSlot(slot))
@@ -221,7 +221,10 @@ private:
   {
     if (!validSlot(slot) || op == 0)
       return;
-    const unsigned gen = (cmdGen_ += 1); // UI thread only
+    // Called from the UI thread AND the CoreMIDI input thread: the
+    // generation bump must be atomic or two writers can mint the same
+    // gen and the audio side (adoption keyed on gen change) drops one.
+    const unsigned gen = cmdGen_.fetch_add(1, std::memory_order_relaxed) + 1;
     gestCmd_.store((gen << 10) | (static_cast<unsigned>(slot) << 2) | op, std::memory_order_relaxed);
   }
 
@@ -477,7 +480,7 @@ private:
   std::atomic<float> slotTime_[kNumGestureSlots];
   std::atomic<float> slotRet_[kNumGestureSlots];
   std::atomic<unsigned> gestCmd_{0}; // gen(22) | slot(8) | op(2)
-  unsigned cmdGen_ = 0;              // UI thread only
+  std::atomic<unsigned> cmdGen_{0};  // UI + MIDI threads (fetch_add)
 
   int cmdSlot_ = 0; // audio thread only: last commanded slot
 

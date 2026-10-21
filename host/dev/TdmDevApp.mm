@@ -18,12 +18,14 @@
 // Hidden flags (also used for headless verification):
 //   --smoke-test   run offline rig/param checks, no GUI, no hardware
 //   --smoke-ui     build the full UI and auto-quit (needs WindowServer)
+//   --list-midi    print CoreMIDI sources (uid + name) and exit
 
 #import <Cocoa/Cocoa.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,117 @@
 #include "dsp/lab/SpecialFx/DevSpecFx.h"
 #include "dsp/lab/Pitch/DevTransposeUi.h"
 #include "host/TdmEngine.h"
+#include "host/midi/MidiDispatch.h"
+#include "host/midi/MidiInput.h"
+#include "host/midi/MidiPersist.h"
+
+// MIDI -> DSP sink (MIDI input thread): lock-free atomic setters ONLY,
+// no UI, no allocation. UI reflection happens on the 10 Hz main tick.
+struct TdmMidiSink : tdm::midi::ISink
+{
+  tdm::specfx::DevSpecFx* spec = nullptr;
+  void setContinuous(tdm::midi::Target t, float v) override
+  {
+    if (t == tdm::midi::Target::SpecExpression)
+      spec->setExpression(v);
+    else if (t == tdm::midi::Target::SpecMix)
+      spec->setMix(v);
+  }
+  void setBool(tdm::midi::Target t, bool v) override
+  {
+    if (t == tdm::midi::Target::SpecExprEnable)
+      spec->setExpressionEnabled(v);
+    else if (t == tdm::midi::Target::SpecGestEnable)
+      spec->setGesturesEnabled(v);
+  }
+  void gesturePress(int s) override { spec->pressSlot(s); }
+  void gestureRelease(int s) override { spec->releaseSlot(s); }
+  void gestureOneShot(int s) override { spec->oneShotSlot(s); }
+};
+
+// Handler context (plain pointers: the controller owns everything and
+// outlives the MIDI client, which is torn down in member order).
+struct TdmMidiCtx
+{
+  tdm::midi::LearnManager* learn = nullptr;
+  tdm::midi::Dispatcher* disp = nullptr;
+};
+
+static void tdmMidiHandler(const tdm::midi::Message* msgs, int n, void* ctx)
+{
+  TdmMidiCtx* c = static_cast<TdmMidiCtx*>(ctx);
+  for (int i = 0; i < n; ++i)
+  {
+    if (c->learn->offer(msgs[i]))
+      continue; // Learn consumes (no dispatch while capturing)
+    c->disp->handleMessage(msgs[i]);
+  }
+}
+
+// MIDI row helpers (main thread only).
+static NSString* midiShortLabel(int t)
+{
+  switch (t)
+  {
+  case 0: return @"Expression";
+  case 1: return @"Mix";
+  case 2: return @"Expr Enable";
+  case 3: return @"Gest Enable";
+  default: return [NSString stringWithFormat:@"Slot %d", t - 3];
+  }
+}
+static NSString* midiTriggerText(const tdm::midi::Trigger& tr)
+{
+  NSString* what = nil;
+  switch (tr.type)
+  {
+  case tdm::midi::MsgType::Cc: what = [NSString stringWithFormat:@"CC%u", tr.number]; break;
+  case tdm::midi::MsgType::NoteOn: what = [NSString stringWithFormat:@"N%u", tr.number]; break;
+  case tdm::midi::MsgType::Program: what = [NSString stringWithFormat:@"PC%u", tr.number]; break;
+  default: what = @"?";
+  }
+  if (tr.channel < 0)
+    return [what stringByAppendingString:@" any"];
+  return [NSString stringWithFormat:@"%@ ch%d", what, tr.channel + 1];
+}
+static NSString* midiLatestText(const tdm::midi::MidiInput::Latest& l)
+{
+  if (l.count == 0)
+    return @"—";
+  NSString* what = nil;
+  switch (l.type)
+  {
+  case tdm::midi::MsgType::Cc:
+    what = [NSString stringWithFormat:@"CC%u = %u", l.number, l.value];
+    break;
+  case tdm::midi::MsgType::NoteOn:
+    what = [NSString stringWithFormat:@"Note %u on (%u)", l.number, l.value];
+    break;
+  case tdm::midi::MsgType::NoteOff:
+    what = [NSString stringWithFormat:@"Note %u off", l.number];
+    break;
+  case tdm::midi::MsgType::Program: what = [NSString stringWithFormat:@"PC%u", l.number]; break;
+  default: what = @"?";
+  }
+  return [NSString stringWithFormat:@"Ch %u | %@ · #%llu", l.channel + 1, what, l.count];
+}
+// Row mode segment <-> Action (continuous rows carry invert instead).
+static tdm::midi::Action midiRowAction(int t, NSInteger seg)
+{
+  if (t <= 1)
+    return tdm::midi::Action::Continuous;
+  if (t <= 3)
+    return (seg == 1) ? tdm::midi::Action::Momentary : tdm::midi::Action::Toggle;
+  return (seg == 1) ? tdm::midi::Action::Momentary : tdm::midi::Action::OneShot;
+}
+static NSInteger midiRowSeg(int t, const tdm::midi::Mapping& m)
+{
+  if (t <= 1)
+    return m.invert ? 1 : 0;
+  if (t <= 3)
+    return (m.action == tdm::midi::Action::Momentary) ? 1 : 0;
+  return (m.action == tdm::midi::Action::Momentary) ? 1 : 0;
+}
 
 // Double-click probe, defined after the control classes below (ObjC needs
 // global scope). External linkage so the in-namespace smoke-test can call it.
@@ -608,6 +721,10 @@ bool probeDoubleClickReset(std::string& detail)
 // Special FX Lab section (voice/control/insert selectors, expression
 // + envelope sliders, momentary Toe, transparency, rig isolation).
 - (BOOL)runSpecProbe:(std::string*)detail;
+// MIDI wiring probe (smoke-test only): section presence, synthetic
+// dispatch through the real table+sink, Learn arm/commit, persistence
+// round-trip to a temp path. Needs no MIDI server or hardware.
+- (BOOL)runMidiProbe:(std::string*)detail;
 @end
 
 @implementation DevController
@@ -643,9 +760,43 @@ bool probeDoubleClickReset(std::string& detail)
   NSSegmentedControl* _specVoiceSeg;
   NSSegmentedControl* _specDirSeg; // Whammy polarity (single source of truth)
   NSSegmentedControl* _specInsertSeg;
+  // Generic MIDI control (host/midi): CoreMIDI transport + mapping
+  // table + Learn + dispatcher -> TdmMidiSink (atomic DSP setters).
+  // Main thread owns the table/UI; the MIDI thread only dispatches.
+  // NOTE: _midi is declared LAST so it is destroyed FIRST (callbacks
+  // stop before the table/learn/dispatcher it references go away).
+  tdm::midi::MappingTable _midiTable;
+  tdm::midi::LearnManager _midiLearn;
+  TdmMidiSink _midiSink;
+  std::unique_ptr<tdm::midi::Dispatcher> _midiDisp;
+  TdmMidiCtx _midiCtx;
+  tdm::midi::MidiInput _midi;
+  NSPopUpButton* _midiSrcPopup;
+  NSTextField* _midiStatus;
+  NSTextField* _midiRecent;
+  NSButton* _midiOmniCheck;
+  NSTextField* _midiSaveLabel;
+  NSTextField* _midiAssign[(int)tdm::midi::Target::Count];
+  NSButton* _midiLearnBtn[(int)tdm::midi::Target::Count];
+  NSSegmentedControl* _midiModeSeg[(int)tdm::midi::Target::Count];
+  NSButton* _midiClearBtn[(int)tdm::midi::Target::Count];
+  std::vector<uint32_t> _midiSrcUids; // popup index -> endpoint UID
+  std::vector<std::string> _midiSrcNames;
+  std::vector<char> _midiSrcConn; // popup index -> connected now
+  std::string _midiPersistMsg;    // startup load note (shown in status)
+  int _midiLearnTarget;           // armed target for Learn, or -1
+  bool _midiOmniRestore;          // persisted OMNI flag (checkbox set at buildUI)
+  bool _midiCalActive;            // continuous-Learn pedal calibration window
+  int _midiCalTarget;
+  tdm::midi::Trigger _midiCalTrigger;
+  uint8_t _midiCalMin;
+  uint8_t _midiCalMax;
+  double _midiCalUntil; // CFAbsoluteTime deadline
+  uint64_t _midiLastCount;
+  uint64_t _midiCalLastCount;
   // Performance-gesture editor: per-slot STAGED configs + names (UI-side
   // only). Save commits the displayed slot; TRIGGER/1-Shot commit, then
-  // fire by slot ID. External (future MIDI) triggers bypass staging.
+  // fire by slot ID. External MIDI triggers bypass staging.
   NSPopUpButton* _specGestPopup;
   NSTextField* _specGestName;
   NSSegmentedControl* _specGestEffectSeg;
@@ -766,6 +917,23 @@ bool probeDoubleClickReset(std::string& detail)
       _specGestStage[i] = tdm::specfx::defaultGestureConfig(i);
       [_specGestNames addObject:[NSString stringWithUTF8String:tdm::specfx::defaultGestureName(i)]];
     }
+    // MIDI control wiring (main thread): sink -> _spec atomics,
+    // dispatcher -> table+sink, transport -> static handler. Then
+    // restore persisted mappings + gesture slots + source intents
+    // (missing/corrupt file falls back to factory silently here; the
+    // MIDI section status line reports it once built).
+    _midiSink.spec = &_spec;
+    _midiDisp.reset(new tdm::midi::Dispatcher(_midiTable, _midiSink));
+    _midiCtx.learn = &_midiLearn;
+    _midiCtx.disp = _midiDisp.get();
+    _midi.setHandler(tdmMidiHandler, &_midiCtx);
+    _midiLearnTarget = -1;
+    _midiCalActive = false;
+    _midiCalTarget = -1;
+    _midiOmniRestore = false;
+    _midiLastCount = 0;
+    _midiCalLastCount = 0;
+    [self midiApplyPersisted];
     _lastStepper = 0.0;
     _advShown = 0.0;
     _gt2Open = NO;
@@ -1730,8 +1898,99 @@ bool probeDoubleClickReset(std::string& detail)
                reset:tdm::OutputTrim::kDefaultTrimDb
                    y:y
                width:kWidth];
-  y += 34;
-  NSTextField* foot = [self makeLabel:@"Dev build: no presets, no meters. Alien + Pitch Shift labs."
+  y += 40;
+
+  // MIDI CONTROL section (generic CoreMIDI -> mapping table -> DSP
+  // atomics; FCB1010 is the first test device, nothing is
+  // controller-specific). All mapping edits are mouse-driven and
+  // work with no hardware connected.
+  NSTextField* midiHead = [self makeLabel:@"MIDI CONTROL" frame:NSMakeRect(20, y, 200, 22) small:NO];
+  [_docView addSubview:midiHead];
+  y += 30;
+  NSTextField* midiSrcLabel = [self makeLabel:@"Input Source" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:midiSrcLabel];
+  _midiSrcPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(135, y - 2, 250, 26) pullsDown:NO];
+  _midiSrcPopup.target = self;
+  _midiSrcPopup.action = @selector(midiSrcSelected:);
+  _midiSrcPopup.toolTip = @"Toggle connection per source (multiple sources stay connected)";
+  [_docView addSubview:_midiSrcPopup];
+  NSButton* midiRefresh = [NSButton buttonWithTitle:@"Refresh" target:self action:@selector(midiRefresh:)];
+  midiRefresh.frame = NSMakeRect(395, y - 2, 90, 26);
+  midiRefresh.bezelStyle = NSBezelStyleRounded;
+  [_docView addSubview:midiRefresh];
+  y += 30;
+  NSTextField* midiRecentLabel =
+      [self makeLabel:@"Recent Input" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:midiRecentLabel];
+  _midiRecent = [self makeLabel:@"—" frame:NSMakeRect(135, y, 440, 22) small:NO];
+  [_docView addSubview:_midiRecent];
+  y += 30;
+  _midiOmniCheck = [NSButton checkboxWithTitle:@"Learn OMNI"
+                                        target:self
+                                        action:@selector(midiOmniToggled:)];
+  _midiOmniCheck.frame = NSMakeRect(20, y, 130, 22);
+  _midiOmniCheck.state = _midiOmniRestore ? NSControlStateValueOn : NSControlStateValueOff;
+  _midiOmniCheck.toolTip = @"Learn ignores source + channel (any controller drives the target)";
+  [_docView addSubview:_midiOmniCheck];
+  _midiStatus = [self makeLabel:@"" frame:NSMakeRect(160, y, 415, 22) small:NO];
+  [_docView addSubview:_midiStatus];
+  y += 30;
+  NSTextField* midiMapHead = [self makeLabel:@"MAPPINGS" frame:NSMakeRect(20, y, 200, 22) small:NO];
+  [_docView addSubview:midiMapHead];
+  y += 30;
+  for (int t = 0; t < (int)tdm::midi::Target::Count; ++t)
+  {
+    NSTextField* lab = [self makeLabel:midiShortLabel(t) frame:NSMakeRect(20, y, 110, 22) small:NO];
+    lab.toolTip = [NSString stringWithUTF8String:tdm::midi::targetName((tdm::midi::Target)t)];
+    [_docView addSubview:lab];
+    _midiAssign[t] = [self makeLabel:@"—" frame:NSMakeRect(135, y, 130, 22) small:NO];
+    [_docView addSubview:_midiAssign[t]];
+    NSButton* learn = [NSButton buttonWithTitle:@"Learn" target:self action:@selector(midiLearnBtn:)];
+    learn.frame = NSMakeRect(275, y - 2, 62, 26);
+    learn.bezelStyle = NSBezelStyleRounded;
+    learn.tag = t;
+    [_docView addSubview:learn];
+    _midiLearnBtn[t] = learn;
+    NSArray<NSString*>* modes = (t <= 1) ? @[ @"Norm", @"Inv" ]
+        : (t <= 3)                       ? @[ @"Tgl", @"Mom" ]
+                                         : @[ @"1-Shot", @"Mom" ];
+    NSSegmentedControl* seg = [NSSegmentedControl segmentedControlWithLabels:modes
+                                                               trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                     target:self
+                                                                     action:@selector(midiModeSeg:)];
+    seg.frame = NSMakeRect(347, y - 2, 140, 26);
+    seg.selectedSegment = 0;
+    seg.tag = 100 + t;
+    [_docView addSubview:seg];
+    _midiModeSeg[t] = seg;
+    NSButton* clear = [NSButton buttonWithTitle:@"×" target:self action:@selector(midiClearRow:)];
+    clear.frame = NSMakeRect(497, y - 2, 28, 26);
+    clear.bezelStyle = NSBezelStyleRounded;
+    clear.tag = 200 + t;
+    clear.toolTip = @"Clear this mapping";
+    [_docView addSubview:clear];
+    _midiClearBtn[t] = clear;
+    y += 30;
+  }
+  NSTextField* midiSaveHead = [self makeLabel:@"Mappings" frame:NSMakeRect(20, y, 110, 22) small:NO];
+  [_docView addSubview:midiSaveHead];
+  NSButton* midiSave = [NSButton buttonWithTitle:@"Save Now" target:self action:@selector(midiSave:)];
+  midiSave.frame = NSMakeRect(135, y - 2, 100, 26);
+  midiSave.bezelStyle = NSBezelStyleRounded;
+  midiSave.toolTip = @"Persist mappings + all gesture slots + source intents";
+  [_docView addSubview:midiSave];
+  NSButton* midiClearAll =
+      [NSButton buttonWithTitle:@"Clear Maps" target:self action:@selector(midiClearAll:)];
+  midiClearAll.frame = NSMakeRect(245, y - 2, 100, 26);
+  midiClearAll.bezelStyle = NSBezelStyleRounded;
+  [_docView addSubview:midiClearAll];
+  _midiSaveLabel = [self makeLabel:@"" frame:NSMakeRect(355, y, 220, 22) small:YES];
+  [_docView addSubview:_midiSaveLabel];
+  y += 30;
+  [self refreshMidiSources];
+  [self refreshMidiRows];
+  y += 10; // gap above the footer
+  NSTextField* foot = [self makeLabel:@"Dev build: MIDI maps persist; no rig presets, no meters."
                                 frame:NSMakeRect(20, y, kWidth - 40, 22)
                                 small:YES];
   [_docView addSubview:foot];
@@ -1888,6 +2147,7 @@ bool probeDoubleClickReset(std::string& detail)
   [self refreshValueLabels:p];
   [self refreshTransposeStatus];
   [self refreshTuner];
+  [self midiTick];
   if (_engine->isRunning())
   {
     _statusLabel.stringValue =
@@ -2359,6 +2619,340 @@ bool probeDoubleClickReset(std::string& detail)
   _spec.oneShotSlot(_specGestSlot);
 }
 
+// Restore persisted MIDI state at startup (main thread, pre-UI):
+// mappings -> table, slots -> router + staging + names, source UIDs
+// -> connection intents (connect if present now, else on hot-plug).
+- (void)midiApplyPersisted
+{
+  tdm::midi::PersistedState st;
+  std::string err;
+  if (!tdm::midi::loadFile(tdm::midi::defaultPath(), st, err))
+    _midiPersistMsg = err + " (factory)";
+  for (const tdm::midi::Mapping& m : st.mappings)
+    _midiTable.addOrReplace(m);
+  for (int i = 0; i < tdm::specfx::kNumGestureSlots; ++i)
+  {
+    _specGestStage[i] = st.slots[i].cfg;
+    _specGestNames[i] = [NSString stringWithUTF8String:st.slots[i].name.c_str()];
+    const tdm::specfx::GestureConfig& c = st.slots[i].cfg;
+    _spec.setSlotVoice(i, static_cast<tdm::specfx::DevSpecFx::Voice>(c.voice));
+    _spec.setSlotDir(i, c.dir);
+    _spec.setSlotMotion(i, c.motion);
+    _spec.setSlotDepthSt(i, c.depthSt);
+    _spec.setSlotTimeMs(i, c.timeMs);
+    _spec.setSlotRetMs(i, c.retMs);
+  }
+  for (uint32_t uid : st.midiSources)
+    _midi.setConnected(uid, true);
+  _midiOmniRestore = st.omniLearn;
+}
+
+// Rebuild the source popup + status line (main thread only).
+- (void)refreshMidiSources
+{
+  [_midiSrcPopup removeAllItems];
+  _midiSrcUids.clear();
+  _midiSrcNames.clear();
+  _midiSrcConn.clear();
+  if (!_midi.available())
+  {
+    [_midiSrcPopup addItemWithTitle:@"MIDI unavailable"];
+    [[_midiSrcPopup itemAtIndex:0] setEnabled:NO];
+    _midiStatus.stringValue = @"No MIDI server (sandboxed shell?)";
+    return;
+  }
+  const std::vector<tdm::midi::MidiInput::Source> srcs = _midi.refreshSources();
+  if (srcs.empty())
+  {
+    [_midiSrcPopup addItemWithTitle:@"No MIDI sources"];
+    [[_midiSrcPopup itemAtIndex:0] setEnabled:NO];
+  }
+  int nConn = 0;
+  std::string firstConn;
+  for (const auto& s : srcs)
+  {
+    _midiSrcUids.push_back(s.uid);
+    _midiSrcNames.push_back(s.name);
+    _midiSrcConn.push_back(s.connected ? 1 : 0);
+    NSString* title = [NSString stringWithFormat:@"%s%s", s.connected ? "✓ " : "",
+                                                 s.name.c_str()];
+    [_midiSrcPopup addItemWithTitle:title];
+    if (s.connected)
+    {
+      ++nConn;
+      if (firstConn.empty())
+        firstConn = s.name;
+    }
+  }
+  if (!srcs.empty())
+    [_midiSrcPopup selectItemAtIndex:0];
+  NSMutableString* st = [NSMutableString string];
+  if (nConn == 0)
+    [st appendString:@"Not connected"];
+  else if (nConn == 1)
+    [st appendFormat:@"Connected: %s", firstConn.c_str()];
+  else
+    [st appendFormat:@"%d connected", nConn];
+  if (!_midiPersistMsg.empty())
+    [st appendFormat:@" · MIDI file: %s", _midiPersistMsg.c_str()];
+  _midiStatus.stringValue = st;
+}
+
+// Sync every mapping row to the table + Learn/cal state (main thread).
+- (void)refreshMidiRows
+{
+  for (int t = 0; t < (int)tdm::midi::Target::Count; ++t)
+  {
+    const tdm::midi::Target tgt = (tdm::midi::Target)t;
+    tdm::midi::Mapping m;
+    if (_midiTable.findTarget(tgt, m))
+    {
+      _midiAssign[t].stringValue = midiTriggerText(m.trigger);
+      _midiModeSeg[t].selectedSegment = midiRowSeg(t, m);
+    }
+    else
+      _midiAssign[t].stringValue = @"—"; // mode seg keeps pending default
+    if (_midiCalActive && _midiCalTarget == t)
+      _midiLearnBtn[t].title = @"Move pedal…";
+    else if (_midiLearnTarget == t)
+      _midiLearnBtn[t].title = @"Learning…";
+    else
+      _midiLearnBtn[t].title = @"Learn";
+  }
+}
+
+- (void)midiSrcSelected:(NSPopUpButton*)sender
+{
+  const NSInteger idx = sender.indexOfSelectedItem;
+  if (idx < 0 || idx >= (NSInteger)_midiSrcUids.size())
+    return;
+  const uint32_t uid = _midiSrcUids[(size_t)idx];
+  _midi.setConnected(uid, _midiSrcConn[(size_t)idx] == 0); // toggle
+  [self refreshMidiSources];
+}
+
+- (void)midiRefresh:(id)sender
+{
+  (void)sender;
+  [self refreshMidiSources];
+}
+
+- (void)midiOmniToggled:(NSButton*)sender
+{
+  (void)sender; // read at arm time; persisted on Save
+}
+
+- (void)midiLearnBtn:(NSButton*)sender
+{
+  const int t = (int)sender.tag;
+  if (_midiCalActive) // second press finishes pedal calibration early
+  {
+    [self midiFinishCal];
+    return;
+  }
+  if (_midiLearnTarget == t) // toggle off
+  {
+    _midiLearn.cancel();
+    _midiLearnTarget = -1;
+    [self refreshMidiRows];
+    return;
+  }
+  _midiLearn.arm((tdm::midi::Target)t, _midiOmniCheck.state == NSControlStateValueOn);
+  _midiLearnTarget = t;
+  [self refreshMidiRows];
+}
+
+- (void)midiModeSeg:(NSSegmentedControl*)sender
+{
+  const int t = (int)sender.tag - 100;
+  const tdm::midi::Target tgt = (tdm::midi::Target)t;
+  tdm::midi::Mapping m;
+  if (!_midiTable.findTarget(tgt, m))
+    return; // no mapping: seg is the pending default for next Learn
+  if (t <= 1)
+    m.invert = (sender.selectedSegment == 1);
+  else
+  {
+    const tdm::midi::Action a = midiRowAction(t, sender.selectedSegment);
+    if (a == tdm::midi::Action::Momentary && !tdm::midi::MappingTable::triggerHasRelease(m.trigger))
+    {
+      _midiSaveLabel.stringValue = @"PC has no release — use 1-Shot/Toggle";
+      [self refreshMidiRows]; // revert the seg to the stored action
+      return;
+    }
+    m.action = a;
+  }
+  _midiTable.addOrReplace(m); // also clears edge/toggle memory
+  [self refreshMidiRows];
+}
+
+- (void)midiClearRow:(NSButton*)sender
+{
+  const int t = (int)sender.tag - 200;
+  if (_midiLearnTarget == t)
+  {
+    _midiLearn.cancel();
+    _midiLearnTarget = -1;
+  }
+  if (_midiCalActive && _midiCalTarget == t)
+    _midiCalActive = false;
+  _midiTable.removeTarget((tdm::midi::Target)t);
+  [self refreshMidiRows];
+}
+
+- (void)midiClearAll:(id)sender
+{
+  (void)sender;
+  _midiLearn.cancel();
+  _midiLearnTarget = -1;
+  _midiCalActive = false;
+  _midiTable.clear();
+  [self refreshMidiRows];
+}
+
+// Commit every staged gesture slot (displayed first, incl. its name
+// field), then persist mappings + slots + sources + OMNI (main thread;
+// file IO never touches audio/MIDI threads).
+- (void)midiSave:(id)sender
+{
+  (void)sender;
+  [self specGestSave:nil];
+  for (int i = 0; i < tdm::specfx::kNumGestureSlots; ++i)
+  {
+    if (i == _specGestSlot)
+      continue;
+    const tdm::specfx::GestureConfig& c = _specGestStage[i];
+    _spec.setSlotVoice(i, static_cast<tdm::specfx::DevSpecFx::Voice>(c.voice));
+    _spec.setSlotDir(i, c.dir);
+    _spec.setSlotMotion(i, c.motion);
+    _spec.setSlotDepthSt(i, c.depthSt);
+    _spec.setSlotTimeMs(i, c.timeMs);
+    _spec.setSlotRetMs(i, c.retMs);
+  }
+  tdm::midi::PersistedState st;
+  st.omniLearn = _midiOmniCheck.state == NSControlStateValueOn;
+  st.midiSources = _midi.wantedSources();
+  st.mappings = _midiTable.snapshot();
+  for (int i = 0; i < tdm::specfx::kNumGestureSlots; ++i)
+  {
+    st.slots[i].name = _specGestNames[i].UTF8String;
+    tdm::specfx::GestureConfig c;
+    c.voice = static_cast<int>(_spec.slotVoice(i));
+    c.dir = _spec.slotDir(i);
+    c.motion = _spec.slotMotion(i);
+    c.depthSt = _spec.slotDepthSt(i);
+    c.timeMs = _spec.slotTimeMs(i);
+    c.retMs = _spec.slotRetMs(i);
+    st.slots[i].cfg = c;
+  }
+  std::string err;
+  if (tdm::midi::saveFile(tdm::midi::defaultPath(), st, err))
+  {
+    NSDateFormatter* fmt = [[NSDateFormatter alloc] init];
+    fmt.dateFormat = @"HH:mm:ss";
+    _midiSaveLabel.stringValue = [NSString stringWithFormat:@"Saved %@", [fmt stringFromDate:[NSDate date]]];
+  }
+  else
+    _midiSaveLabel.stringValue = [NSString stringWithFormat:@"Save failed: %s", err.c_str()];
+}
+
+// Commit a Learned trigger (main thread, from midiTick). Continuous
+// targets need a CC pedal: anything else re-arms with a hint, and a
+// CC opens the 2.5 s pedal-calibration window instead of committing.
+- (void)midiCommitLearned:(const tdm::midi::Trigger&)cap
+{
+  const int t = _midiLearnTarget;
+  _midiLearnTarget = -1;
+  if (t <= 1)
+  {
+    if (cap.type != tdm::midi::MsgType::Cc)
+    {
+      _midiLearn.arm((tdm::midi::Target)t, _midiOmniCheck.state == NSControlStateValueOn);
+      _midiLearnTarget = t; // stay armed: Expression/Mix need a CC pedal
+      _midiLearnBtn[t].title = @"Need CC…";
+      return;
+    }
+    _midiCalActive = true;
+    _midiCalTarget = t;
+    _midiCalTrigger = cap;
+    _midiCalMin = 127;
+    _midiCalMax = 0;
+    _midiCalUntil = CFAbsoluteTimeGetCurrent() + 2.5;
+    _midiCalLastCount = _midi.latest().count;
+    [self refreshMidiRows];
+    return;
+  }
+  tdm::midi::Action a = midiRowAction(t, _midiModeSeg[t].selectedSegment);
+  if (a == tdm::midi::Action::Momentary && !tdm::midi::MappingTable::triggerHasRelease(cap))
+    a = (t <= 3) ? tdm::midi::Action::Toggle : tdm::midi::Action::OneShot; // PC: no release
+  tdm::midi::Mapping m;
+  m.trigger = cap;
+  m.target = (tdm::midi::Target)t;
+  m.action = a;
+  _midiTable.addOrReplace(m);
+  [self refreshMidiRows];
+}
+
+// Finish pedal calibration: observed CC window becomes the mapping's
+// input range (narrow/empty sweeps fall back to full 0..127).
+- (void)midiFinishCal
+{
+  const int t = _midiCalTarget;
+  _midiCalActive = false;
+  _midiCalTarget = -1;
+  tdm::midi::Mapping m;
+  m.trigger = _midiCalTrigger;
+  m.target = (tdm::midi::Target)t;
+  m.action = tdm::midi::Action::Continuous;
+  m.invert = (_midiModeSeg[t].selectedSegment == 1);
+  if (_midiCalMax > _midiCalMin && _midiCalMax - _midiCalMin >= 16)
+  {
+    m.calMin = _midiCalMin;
+    m.calMax = _midiCalMax;
+  }
+  _midiTable.addOrReplace(m);
+  [self refreshMidiRows];
+}
+
+// MIDI housekeeping on the 10 Hz tick (main thread): hot-plug drain,
+// monitor snapshot, Learn commit, calibration tracking, and MIDI->UI
+// reflection (sliders/checkboxes follow the same DSP atomics the MIDI
+// sink drives, so pedal moves visibly move the UI with no fighting).
+- (void)midiTick
+{
+  if (_midi.needsRefresh())
+    [self refreshMidiSources];
+  const tdm::midi::MidiInput::Latest lat = _midi.latest();
+  if (lat.count != _midiLastCount)
+  {
+    _midiLastCount = lat.count;
+    _midiRecent.stringValue = midiLatestText(lat);
+  }
+  tdm::midi::Trigger cap;
+  if (_midiLearnTarget >= 0 && _midiLearn.takeCapture(cap))
+    [self midiCommitLearned:cap];
+  else if (_midiCalActive)
+  {
+    if (lat.count != _midiCalLastCount && lat.type == tdm::midi::MsgType::Cc
+        && lat.number == _midiCalTrigger.number
+        && (_midiCalTrigger.sourceUid == 0 || lat.uid == _midiCalTrigger.sourceUid)
+        && (_midiCalTrigger.channel < 0 || lat.channel == (uint8_t)_midiCalTrigger.channel))
+    {
+      _midiCalLastCount = lat.count;
+      if (lat.value < _midiCalMin)
+        _midiCalMin = lat.value;
+      if (lat.value > _midiCalMax)
+        _midiCalMax = lat.value;
+    }
+    if (CFAbsoluteTimeGetCurrent() >= _midiCalUntil)
+      [self midiFinishCal];
+  }
+  _sliders[@(kTagSpecExpr)].doubleValue = _spec.expression() * 100.0;
+  _sliders[@(kTagSpecMix)].doubleValue = _spec.mix01() * 100.0;
+  _specCheck.state = _spec.isExpressionEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+  _specGestCheck.state = _spec.isGesturesEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
 - (void)refreshTuner
 {
   tdm::TunerResult raw;
@@ -2561,8 +3155,9 @@ bool probeDoubleClickReset(std::string& detail)
     return fail("accordion did not swap back to GT2");
   if (_window.frame.size.height != winH0)
     return fail("window grew swapping panels");
-  // Scroll reachability: with GT2 open the document exceeds the viewport and
-  // Output Trim is reachable by scrolling to the bottom.
+  // Scroll reachability: with GT2 open the document exceeds the viewport;
+  // Output Trim scrolls into view, and the MIDI section (now last) is
+  // reachable at the bottom.
   {
     NSClipView* clip = _scrollView.contentView;
     const CGFloat clipH = clip.bounds.size.height;
@@ -2572,10 +3167,13 @@ bool probeDoubleClickReset(std::string& detail)
     const NSRect outF = _sliders[@(kTagOutTrim)].frame;
     if (NSMaxY(outF) > docH + 0.5)
       return fail("output trim outside document");
-    [clip scrollToPoint:NSMakePoint(0.0, docH - clipH)];
-    const NSRect vis = clip.bounds; // clip bounds are in document coords
-    if (!NSIntersectsRect(vis, outF))
+    const CGFloat wantY = NSMinY(outF) - 40.0; // bring Output Trim on screen
+    [clip scrollToPoint:NSMakePoint(0.0, MAX(0.0, MIN(wantY, docH - clipH)))];
+    if (!NSIntersectsRect(clip.bounds, outF))
       return fail("output trim not reachable by scroll");
+    [clip scrollToPoint:NSMakePoint(0.0, docH - clipH)];
+    if (!NSIntersectsRect(clip.bounds, _midiSaveLabel.frame))
+      return fail("MIDI section not reachable by scroll");
     [clip scrollToPoint:NSMakePoint(0.0, 0.0)]; // park back at the top
   }
   if (![self checkDocGeometry:detail])
@@ -3406,6 +4004,137 @@ bool probeDoubleClickReset(std::string& detail)
   return YES;
 }
 
+- (BOOL)runMidiProbe:(std::string*)detail
+{
+  auto fail = [&](const char* msg) {
+    *detail = std::string(" [midi: ") + msg + "]";
+    return NO;
+  };
+  using tdm::midi::Action;
+  using tdm::midi::Mapping;
+  using tdm::midi::Message;
+  using tdm::midi::MsgType;
+  using tdm::midi::Target;
+  using tdm::midi::Trigger;
+  // Section presence (12 rows + transport controls).
+  if (_midiSrcPopup == nil || _midiStatus == nil || _midiRecent == nil || _midiOmniCheck == nil
+      || _midiSaveLabel == nil)
+    return fail("section missing");
+  for (int t = 0; t < (int)Target::Count; ++t)
+    if (_midiAssign[t] == nil || _midiLearnBtn[t] == nil || _midiModeSeg[t] == nil
+        || _midiClearBtn[t] == nil)
+      return fail("mapping row missing");
+  // Synthetic dispatch through the REAL table+sink reaches _spec.
+  _midiTable.clear();
+  Mapping ce;
+  ce.trigger.sourceUid = 0;
+  ce.trigger.channel = -1;
+  ce.trigger.type = MsgType::Cc;
+  ce.trigger.number = 7;
+  ce.target = Target::SpecExpression;
+  ce.action = Action::Continuous;
+  _midiTable.addOrReplace(ce);
+  Message cc;
+  cc.channel = 0;
+  cc.type = MsgType::Cc;
+  cc.number = 7;
+  cc.value = 64;
+  _midiDisp->handleMessage(cc);
+  if (std::fabs(_spec.expression() - 64.0f / 127.0f) > 1e-6f)
+    return fail("expression dispatch lost");
+  [self midiTick]; // UI reflection follows the DSP atomic
+  if (std::fabs(_sliders[@(kTagSpecExpr)].doubleValue - 6400.0 / 127.0) > 1e-6)
+    return fail("expression reflection lost");
+  Mapping tg;
+  tg.trigger.type = MsgType::Program;
+  tg.trigger.number = 6;
+  tg.target = Target::SpecGestEnable;
+  tg.action = Action::Toggle;
+  _midiTable.addOrReplace(tg);
+  Message pc;
+  pc.type = MsgType::Program;
+  pc.number = 6;
+  _midiDisp->handleMessage(pc);
+  if (!_spec.isGesturesEnabled())
+    return fail("toggle on lost");
+  [self midiTick];
+  if (_specGestCheck.state != NSControlStateValueOn)
+    return fail("checkbox reflection lost");
+  _midiDisp->handleMessage(pc);
+  if (_spec.isGesturesEnabled())
+    return fail("toggle off lost");
+  // Gesture slot by ID through the dispatcher + router (slot 0 one-shot
+  // fires and completes with Expression OFF, like hardware).
+  Mapping os;
+  os.trigger.type = MsgType::Program;
+  os.trigger.number = 10;
+  os.target = Target::GestSlot0;
+  os.action = Action::OneShot;
+  _midiTable.addOrReplace(os);
+  _spec.setExpressionEnabled(false);
+  _spec.setGesturesEnabled(true);
+  _engine->rig().reset(48000.0, 512);
+  Message fire;
+  fire.type = MsgType::Program;
+  fire.number = 10;
+  _midiDisp->handleMessage(fire);
+  std::vector<float> tick(512, 0.1f);
+  _spec.preTap().process(tick.data(), tick.data(), 512);
+  if (!_spec.preGestureActive())
+    return fail("MIDI one-shot lost");
+  for (int k = 0; k < 40; ++k) // slot 0: 50 ms + 100 ms + margin
+    _spec.preTap().process(tick.data(), tick.data(), 512);
+  if (_spec.preGestureActive())
+    return fail("MIDI one-shot stuck");
+  // Learn arm -> offer -> tick-commit, all headless (slot row 6 = Slot 2).
+  [self midiLearnBtn:_midiLearnBtn[5]];
+  if (_midiLearn.armed() != Target::GestSlot1)
+    return fail("learn did not arm");
+  Message key;
+  key.channel = 0;
+  key.type = MsgType::NoteOn;
+  key.number = 60;
+  key.value = 100;
+  if (!_midiLearn.offer(key))
+    return fail("learn did not consume");
+  [self midiTick];
+  Mapping got;
+  if (!_midiTable.findTarget(Target::GestSlot1, got) || got.trigger.number != 60
+      || got.trigger.type != MsgType::NoteOn || got.action != Action::OneShot)
+    return fail("learn did not commit");
+  if (![_midiAssign[5].stringValue isEqualToString:@"N60 ch1"])
+    return fail("learn row text wrong");
+  [self midiClearRow:_midiClearBtn[5]]; // real action (tag math included)
+  if (_midiTable.findTarget(Target::GestSlot1, got))
+    return fail("clear row wrong");
+  if (![_midiAssign[5].stringValue isEqualToString:@"—"])
+    return fail("clear row wrong");
+  // Persistence round-trip to a temp path (never the real default).
+  tdm::midi::PersistedState st = tdm::midi::defaultState();
+  st.mappings = _midiTable.snapshot();
+  st.slots[1].name = "Probe Slot";
+  std::string err;
+  const std::string tmp = "/tmp/tdm-midi-probe.json";
+  if (!tdm::midi::saveFile(tmp, st, err))
+    return fail("probe save failed");
+  tdm::midi::PersistedState back;
+  if (!tdm::midi::loadFile(tmp, back, err) || back.slots[1].name != "Probe Slot"
+      || back.mappings.size() != st.mappings.size())
+    return fail("probe load mismatch");
+  std::remove(tmp.c_str());
+  if (!tdm::midi::loadJson("{bad", back, err))
+  {
+    // expected failure; err carries the reason
+  }
+  else
+    return fail("corrupt JSON accepted");
+  _midiTable.clear();
+  [self refreshMidiRows];
+  if (![self checkDocGeometry:detail])
+    return NO;
+  return YES;
+}
+
 - (void)chooseNam:(id)sender
 {
   (void)sender;
@@ -3484,6 +4213,8 @@ bool probeTransposeUiFull(std::string& detail)
       ok = [controller runAlienProbe:&detail];
     if (ok == YES)
       ok = [controller runSpecProbe:&detail];
+    if (ok == YES)
+      ok = [controller runMidiProbe:&detail];
     delete engine; // stage (controller ivar) still alive: correct order
   }
   return ok == YES;
@@ -3495,6 +4226,21 @@ int main(int argc, char** argv)
   {
     if (std::string(argv[i]) == "--smoke-test")
       return smokeTest();
+    if (std::string(argv[i]) == "--list-midi")
+    {
+      tdm::midi::MidiInput in;
+      if (!in.available())
+      {
+        std::printf("MIDI unavailable (no server)\n");
+        return 1;
+      }
+      const std::vector<tdm::midi::MidiInput::Source> srcs = in.refreshSources();
+      if (srcs.empty())
+        std::printf("No MIDI sources\n");
+      for (const auto& s : srcs)
+        std::printf("%u\t%s\n", s.uid, s.name.c_str());
+      return 0;
+    }
   }
   bool smokeUi = false;
   for (int i = 1; i < argc; ++i)

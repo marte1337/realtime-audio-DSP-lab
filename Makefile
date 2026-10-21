@@ -47,7 +47,7 @@ ENGINE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(ENGINE_SRCS))
 DEV_SRCS := host/dev/TdmDevApp.mm
 DEV_OBJS := $(BUILD)/transpose-dev/host/dev/TdmDevApp.o
 
-TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTuner.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp tests/TestSlam.cpp tests/TestDevSlam.cpp tests/TestAlienFx.cpp tests/TestSpecFx.cpp
+TEST_SRCS := tests/TestMain.cpp tests/TestWav.cpp tests/TestCabIr.cpp tests/TestNam.cpp tests/TestRig.cpp tests/TestRigParams.cpp tests/TestGate.cpp tests/TestTrim.cpp tests/TestTranspose.cpp tests/TestTuner.cpp tests/TestTightDrive.cpp tests/TestToneShape.cpp tests/TestSpace.cpp tests/TestOutputTrim.cpp tests/TestLabPitch.cpp tests/TestLabMulti.cpp tests/TestLabWsola.cpp tests/TestLabWsolaLatency.cpp tests/TestLabWsolaLive.cpp tests/TestLabPitchV2.cpp tests/TestLabWsolaV2.cpp tests/TestGuitarTranspose.cpp tests/TestDevTranspose.cpp tests/TestHostBuffer.cpp tests/TestSlam.cpp tests/TestDevSlam.cpp tests/TestAlienFx.cpp tests/TestSpecFx.cpp tests/TestMidi.cpp
 TEST_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(TEST_SRCS))
 
 # Lab pitch prototype: standalone offline tool, deliberately NOT linked into
@@ -77,6 +77,13 @@ SLAM_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(SLAM_SRCS))
 FRAMEWORKS := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
 DEV_FRAMEWORKS := $(FRAMEWORKS) -framework Cocoa -framework UniformTypeIdentifiers
 BENCH_FRAMEWORKS := -framework Accelerate
+MIDI_FRAMEWORKS := -framework CoreMIDI -framework CoreFoundation
+
+# Generic MIDI control layer (host/midi): CoreMIDI transport + parser +
+# mapping/learn + dispatch + JSON persistence. Linked into the tests and
+# the DEV app only — production tdm_live/tdm_render stay MIDI-free.
+MIDI_SRCS := host/midi/MidiPersist.cpp host/midi/MidiInput.cpp
+MIDI_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(MIDI_SRCS))
 
 # External benchmark dependencies (RESEARCH/BENCHMARK ONLY - never product).
 # Rubber Band 4.0.0 (GPL-2+), SoundTouch 2.4.1 (LGPL-2.1), Signalsmith
@@ -195,8 +202,8 @@ check-t3k-deps:
 
 -include $(TDM_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(ENGINE_OBJS:.o=.d) $(DEV_OBJS:.o=.d) $(LABPITCH_OBJS:.o=.d) $(LABLIVE_OBJS:.o=.d) $(BUILD)/app/TdmLive.d $(BUILD)/app/TdmRender.d $(DEVTRANSPOSE_DEV_OBJS:.o=.d)
 
-$(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS) $(LABPITCH_LIB) $(LABLIVE_OBJS) $(DEVTRANSPOSE_TEST_OBJ) $(SLAM_OBJS)
-	$(CXX) $(STD) $^ -o $@
+$(BUILD)/tdm_tests: $(TDM_OBJS) $(TEST_OBJS) $(NAM_OBJS) $(LABPITCH_LIB) $(LABLIVE_OBJS) $(DEVTRANSPOSE_TEST_OBJ) $(SLAM_OBJS) $(MIDI_OBJS)
+	$(CXX) $(STD) $^ $(MIDI_FRAMEWORKS) -o $@
 
 $(BUILD)/tdm_render: $(TDM_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmRender.o
 	$(CXX) $(STD) $^ -o $@
@@ -204,8 +211,8 @@ $(BUILD)/tdm_render: $(TDM_OBJS) $(NAM_OBJS) $(BUILD)/app/TdmRender.o
 $(BUILD)/tdm_live: $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(SLAM_OBJS) $(BUILD)/app/TdmLive.o
 	$(CXX) $(STD) $^ $(FRAMEWORKS) -o $@
 
-$(BUILD)/tdm_dev: check-t3k-deps $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(SLAM_OBJS) $(DEV_OBJS) $(DEVTRANSPOSE_STAGE_OBJ) $(T3K_OBJS)
-	$(CXX) $(STD) $(filter-out check-t3k-deps,$^) $(DEV_FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) -o $@
+$(BUILD)/tdm_dev: check-t3k-deps $(TDM_OBJS) $(ENGINE_OBJS) $(NAM_OBJS) $(LABLIVE_OBJS) $(LABWSOLA_OBJ) $(SLAM_OBJS) $(DEV_OBJS) $(DEVTRANSPOSE_STAGE_OBJ) $(T3K_OBJS) $(MIDI_OBJS)
+	$(CXX) $(STD) $(filter-out check-t3k-deps,$^) $(DEV_FRAMEWORKS) $(BENCH_FRAMEWORKS) $(T3K_FRAMEWORKS) $(T3K_LIBS) $(MIDI_FRAMEWORKS) -o $@
 
 $(BUILD)/tdm_labpitch: $(LABPITCH_OBJS) $(BUILD)/dsp/WavFile.o
 	$(CXX) $(STD) $^ -o $@
